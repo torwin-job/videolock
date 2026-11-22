@@ -90,7 +90,7 @@ $UNLOCK_CMD = $HOME/.local/bin/videolock-unlock.sh
 | `VIDEOLOCK_FONT=…` | CSS font (default: **Pixelon**, same as SDDM Astronaut) |
 | `VIDEOLOCK_RESET_LAYOUT=0` | disable auto-reset to primary layout on lock |
 | `VIDEOLOCK_SCALE=1.25` | force UI scale (default: monitor scale × density) |
-| `VIDEOLOCK_DENSITY=0.88` | shrink/grow panel vs monitor scale (default 0.88) |
+| `VIDEOLOCK_DENSITY=0.95` | shrink/grow panel vs monitor scale (default 0.95) |
 
 On lock, videolock **resets the keyboard to layout 0** (usually `us`) and shows `US`/`RU` + `CAPS` on the panel. Use `bindl` (or Lua `locked = true`) for layout hotkeys — see `examples/`.
 

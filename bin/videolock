@@ -16,7 +16,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-__version__ = "0.2.3"
+__version__ = "0.2.4"
 
 os.environ.setdefault("GTK_IM_MODULE", "none")
 os.environ.setdefault("GST_PLUGIN_FEATURE_RANK", "vah264dec:MAX,vaapih264dec:MAX")
@@ -372,8 +372,8 @@ def _ui_scale() -> float:
                     base = float(mon.get_scale_factor())
         except Exception:
             pass
-    # Slightly denser than 1:1 so panel doesn't dominate (Pixelon reads large)
-    density = 0.88
+    # Slightly under 1:1 — Pixelon still reads a bit large vs proportional fonts
+    density = 0.95
     dens_env = os.environ.get("VIDEOLOCK_DENSITY", "").strip()
     if dens_env:
         try:
@@ -390,30 +390,37 @@ def _px(n: float, scale: float) -> str:
 def _build_css(scale: float | None = None) -> bytes:
     s = scale if scale is not None else _ui_scale()
     font = _font_stack()
-    # Base sizes tuned smaller for Pixelon (bitmap fonts look oversized at JetBrains sizes)
+    # Pixelon on every label via window/panel inheritance + explicit classes
     return f"""
-window {{ background: #0b1020; }}
+window {{
+  background: #0b1020;
+  font-family: {font};
+}}
+label, button, entry, textview {{
+  font-family: {font};
+}}
 .dim {{ background: rgba(8,12,24,0.22); }}
 .panel {{
   background: rgba(17,22,40,0.62);
   border: 1px solid rgba(120,160,255,0.35);
-  border-radius: {_px(16, s)};
-  padding: {_px(20, s)} {_px(26, s)};
+  border-radius: {_px(18, s)};
+  padding: {_px(22, s)} {_px(28, s)};
+  font-family: {font};
 }}
-.clock {{ color: #e8eeff; font-size: {_px(56, s)}; font-weight: 400; font-family: {font}; }}
-.date {{ color: #b8c4e0; font-size: {_px(14, s)}; margin-bottom: {_px(10, s)}; font-family: {font}; }}
-.user {{ color: #89b4fa; font-size: {_px(13, s)}; margin-bottom: {_px(10, s)}; font-family: {font}; }}
+.clock {{ color: #e8eeff; font-size: {_px(62, s)}; font-weight: 400; font-family: {font}; }}
+.date {{ color: #b8c4e0; font-size: {_px(15, s)}; margin-bottom: {_px(10, s)}; font-family: {font}; }}
+.user {{ color: #89b4fa; font-size: {_px(14, s)}; margin-bottom: {_px(10, s)}; font-family: {font}; }}
 .dots {{
-  color: #e8eeff; font-size: {_px(22, s)}; letter-spacing: {_px(5, s)};
-  min-width: {_px(260, s)}; min-height: {_px(40, s)}; padding: {_px(8, s)} {_px(12, s)};
-  border-radius: {_px(10, s)}; background: rgba(12,16,28,0.92);
+  color: #e8eeff; font-size: {_px(24, s)}; letter-spacing: {_px(5, s)};
+  min-width: {_px(280, s)}; min-height: {_px(42, s)}; padding: {_px(8, s)} {_px(14, s)};
+  border-radius: {_px(12, s)}; background: rgba(12,16,28,0.92);
   border: 1px solid rgba(120,160,255,0.55);
   font-family: {font};
 }}
-.error {{ color: #f38ba8; font-size: {_px(12, s)}; min-height: {_px(16, s)}; margin-top: {_px(6, s)}; font-family: {font}; }}
-.hint {{ color: #7f8aad; font-size: {_px(11, s)}; margin-top: {_px(8, s)}; font-family: {font}; }}
+.error {{ color: #f38ba8; font-size: {_px(13, s)}; min-height: {_px(16, s)}; margin-top: {_px(6, s)}; font-family: {font}; }}
+.hint {{ color: #7f8aad; font-size: {_px(12, s)}; margin-top: {_px(8, s)}; font-family: {font}; }}
 .status {{
-  color: #a6adc8; font-size: {_px(11, s)}; margin-top: {_px(8, s)}; letter-spacing: {_px(2, s)};
+  color: #a6adc8; font-size: {_px(12, s)}; margin-top: {_px(8, s)}; letter-spacing: {_px(2, s)};
   font-family: {font};
 }}
 .status-warn {{ color: #f9e2af; }}

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.4 — 2026-11-22
+
+- Pixelon on all labels (window/panel/`label` inheritance, not only clock)
+- Slightly larger panel than 0.2.3 (density default **0.95**)
+
 ## 0.2.3 — 2026-11-22
 
 - Default font: **Pixelon** (SDDM Astronaut / hyde_unified)

@@ -89,8 +89,27 @@ $UNLOCK_CMD = $HOME/.local/bin/videolock-unlock.sh
 | `VIDEOLOCK_LANG=en\|ru` | UI language (default: locale) |
 | `VIDEOLOCK_FONT=…` | CSS font family override |
 | `VIDEOLOCK_RESET_LAYOUT=0` | disable auto-reset to primary layout on lock |
+| `VIDEOLOCK_SCALE=1.25` | force UI scale (default: Hyprland monitor scale) |
 
 On lock, videolock **resets the keyboard to layout 0** (usually `us`) and shows `US`/`RU` + `CAPS` on the panel. Use `bindl` (or Lua `locked = true`) for layout hotkeys — see `examples/`.
+
+### Crash recovery
+
+If the locker dies without a clean `unlock()` (Hyprland crash-lock overlay):
+
+```bash
+videolock --recover
+# or
+videolock-unlock.sh --recover
+```
+
+### Install tips (avoid dual Super+L)
+
+```bash
+./install.sh --hypridle --bind
+```
+
+`--hypridle` backups `hypridle.conf` first. `--bind` installs one Super+L → `videolock.sh` path and comments competing `loginctl lock-session` binds.
 
 Prepare manually:
 

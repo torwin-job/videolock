@@ -16,7 +16,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 os.environ.setdefault("GTK_IM_MODULE", "none")
 os.environ.setdefault("GST_PLUGIN_FEATURE_RANK", "vah264dec:MAX,vaapih264dec:MAX")
@@ -137,20 +137,110 @@ def _(key: str, **kwargs) -> str:
 
 # --- helpers --------------------------------------------------------------------
 
-def _acquire_singleton() -> bool:
-    global _lock_fd
+def _pid_alive(pid: int) -> bool:
     try:
-        _lock_fd = open(LOCKFILE, "w")
-        fcntl.flock(_lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        _lock_fd.write(str(os.getpid()))
-        _lock_fd.flush()
-        try:
-            os.chmod(LOCKFILE, 0o600)
-        except OSError:
-            pass
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
         return True
     except OSError:
         return False
+
+
+def _read_lock_pid() -> int | None:
+    try:
+        raw = LOCKFILE.read_text().strip()
+        return int(raw) if raw else None
+    except Exception:
+        return None
+
+
+def _clear_stale_lockfile() -> bool:
+    """Remove lockfile if owner PID is dead. Returns True if cleared/absent."""
+    pid = _read_lock_pid()
+    if pid is not None and _pid_alive(pid):
+        return False
+    try:
+        if LOCKFILE.exists():
+            LOCKFILE.unlink()
+            if pid is not None:
+                log(f"cleared stale lockfile (dead pid {pid})")
+        return True
+    except OSError:
+        return False
+
+
+def _recover_session() -> int:
+    """Stop hung locker + clear Hyprland crash-lock overlay."""
+    print(f"videolock {__version__} — recover")
+    pid = _read_lock_pid()
+    if pid is not None and _pid_alive(pid):
+        print(f"  signaling locker pid={pid} (SIGTERM)")
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError as e:
+            print(f"  SIGTERM failed: {e}")
+        for _ in range(10):
+            if not _pid_alive(pid):
+                break
+            time.sleep(0.1)
+        if _pid_alive(pid):
+            print(f"  SIGKILL pid={pid}")
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+    elif pid is not None:
+        print(f"  stale lockfile pid={pid} (not running)")
+    else:
+        print("  no live locker pid in lockfile")
+
+    _clear_stale_lockfile()
+    try:
+        if LOCKFILE.exists():
+            LOCKFILE.unlink()
+    except OSError:
+        pass
+
+    out = _hyprctl(["eval", "hl.clear_crashed_lockscreen()"])
+    if out:
+        print(f"  clear_crashed_lockscreen: {out}")
+    else:
+        _hyprctl(["dispatch", "forcerendererreload"])
+        print("  attempted forcerendererreload (HyDE clear may be unavailable)")
+    print("  recover done")
+    return 0
+
+
+def _acquire_singleton() -> bool:
+    """Flock singleton; clears stale PID lockfiles once."""
+    global _lock_fd
+    for attempt in range(2):
+        try:
+            _lock_fd = open(LOCKFILE, "w")
+            fcntl.flock(_lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _lock_fd.seek(0)
+            _lock_fd.truncate()
+            _lock_fd.write(str(os.getpid()))
+            _lock_fd.flush()
+            try:
+                os.chmod(LOCKFILE, 0o600)
+            except OSError:
+                pass
+            return True
+        except OSError:
+            try:
+                if _lock_fd is not None:
+                    _lock_fd.close()
+            except Exception:
+                pass
+            _lock_fd = None
+            if attempt == 0 and _clear_stale_lockfile():
+                continue
+            return False
+    return False
 
 
 def log(msg: str) -> None:
@@ -253,7 +343,41 @@ def _font_stack() -> str:
     return '"JetBrainsMono Nerd Font", "JetBrains Mono", "monospace"'
 
 
-def _build_css() -> bytes:
+def _ui_scale() -> float:
+    """Logical UI scale for HiDPI / Hyprland fractional scale (1.0–2.5)."""
+    env = os.environ.get("VIDEOLOCK_SCALE", "").strip()
+    if env:
+        try:
+            return max(1.0, min(2.5, float(env)))
+        except ValueError:
+            pass
+    # Prefer Hyprland monitor scale (supports 1.2 etc.)
+    raw = _hyprctl(["monitors", "-j"])
+    if raw:
+        try:
+            mons = json.loads(raw)
+            scales = [float(m.get("scale") or 1.0) for m in mons if m]
+            if scales:
+                return max(1.0, min(2.5, max(scales)))
+        except Exception:
+            pass
+    try:
+        display = Gdk.Display.get_default()
+        if display is not None:
+            mon = display.get_monitors().get_item(0)
+            if mon is not None and hasattr(mon, "get_scale_factor"):
+                return max(1.0, min(2.5, float(mon.get_scale_factor())))
+    except Exception:
+        pass
+    return 1.0
+
+
+def _px(n: float, scale: float) -> str:
+    return f"{max(1, int(round(n * scale)))}px"
+
+
+def _build_css(scale: float | None = None) -> bytes:
+    s = scale if scale is not None else _ui_scale()
     font = _font_stack()
     return f"""
 window {{ background: #0b1020; }}
@@ -261,23 +385,23 @@ window {{ background: #0b1020; }}
 .panel {{
   background: rgba(17,22,40,0.62);
   border: 1px solid rgba(120,160,255,0.35);
-  border-radius: 22px;
-  padding: 28px 34px;
+  border-radius: {_px(22, s)};
+  padding: {_px(28, s)} {_px(34, s)};
 }}
-.clock {{ color: #e8eeff; font-size: 76px; font-weight: 700; font-family: {font}; }}
-.date {{ color: #b8c4e0; font-size: 18px; margin-bottom: 14px; font-family: {font}; }}
-.user {{ color: #89b4fa; font-size: 15px; margin-bottom: 12px; font-family: {font}; }}
+.clock {{ color: #e8eeff; font-size: {_px(76, s)}; font-weight: 700; font-family: {font}; }}
+.date {{ color: #b8c4e0; font-size: {_px(18, s)}; margin-bottom: {_px(14, s)}; font-family: {font}; }}
+.user {{ color: #89b4fa; font-size: {_px(15, s)}; margin-bottom: {_px(12, s)}; font-family: {font}; }}
 .dots {{
-  color: #e8eeff; font-size: 28px; letter-spacing: 6px;
-  min-width: 320px; min-height: 48px; padding: 10px 16px;
-  border-radius: 14px; background: rgba(12,16,28,0.92);
+  color: #e8eeff; font-size: {_px(28, s)}; letter-spacing: {_px(6, s)};
+  min-width: {_px(320, s)}; min-height: {_px(48, s)}; padding: {_px(10, s)} {_px(16, s)};
+  border-radius: {_px(14, s)}; background: rgba(12,16,28,0.92);
   border: 1px solid rgba(120,160,255,0.55);
   font-family: {font};
 }}
-.error {{ color: #f38ba8; font-size: 13px; min-height: 18px; margin-top: 8px; }}
-.hint {{ color: #7f8aad; font-size: 12px; margin-top: 10px; font-family: {font}; }}
+.error {{ color: #f38ba8; font-size: {_px(13, s)}; min-height: {_px(18, s)}; margin-top: {_px(8, s)}; }}
+.hint {{ color: #7f8aad; font-size: {_px(12, s)}; margin-top: {_px(10, s)}; font-family: {font}; }}
 .status {{
-  color: #a6adc8; font-size: 13px; margin-top: 12px; letter-spacing: 2px;
+  color: #a6adc8; font-size: {_px(13, s)}; margin-top: {_px(12, s)}; letter-spacing: {_px(2, s)};
   font-family: {font};
 }}
 .status-warn {{ color: #f9e2af; }}
@@ -796,14 +920,21 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         help="verify dependencies and asset paths, then exit",
     )
+    p.add_argument(
+        "--recover",
+        action="store_true",
+        help="recover from crashed lock: stop hung locker + clear crash overlay",
+    )
     return p.parse_args(argv)
 
 
 def _check() -> int:
     ok = True
+    scale = _ui_scale()
     print(f"videolock {__version__}")
     print(f"  cache:  {CACHE_DIR}")
     print(f"  data:   {DATA_DIR}")
+    print(f"  scale:  {scale:.2f} (override VIDEOLOCK_SCALE)")
     print(f"  poster: {POSTER}  [{'ok' if POSTER.is_file() else 'missing'}]")
     print(f"  video:  {VIDEO}  [{'ok' if VIDEO.is_file() else 'missing'}]")
     nframes = len(list(FRAME_DIR.glob('f-*.jpg'))) if FRAME_DIR.is_dir() else 0
@@ -823,6 +954,8 @@ def _check() -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+    if args.recover:
+        return _recover_session()
     if args.check:
         return _check()
 
@@ -844,8 +977,10 @@ def main(argv: list[str] | None = None) -> int:
 
     def on_activate(app: Gtk.Application):
         app.hold()
+        scale = _ui_scale()
+        log(f"ui scale={scale:.2f}")
         css = Gtk.CssProvider()
-        css.load_from_data(_build_css())
+        css.load_from_data(_build_css(scale))
         display = Gdk.Display.get_default()
         Gtk.StyleContext.add_provider_for_display(
             display, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION

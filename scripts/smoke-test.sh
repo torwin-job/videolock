@@ -172,6 +172,67 @@ fi
 # wait bg
 wait "$locker_bg" 2>/dev/null || true
 
+# --- crash recovery (SIGKILL without unlock()) ---
+echo "-- crash recover"
+"$BIN/videolock-unlock.sh" >/dev/null 2>&1 || true
+sleep 0.2
+"$BIN/videolock.sh" >/dev/null 2>&1 &
+crash_bg=$!
+armed=0
+for i in $(seq 1 30); do
+  if [ -f "$CACHE/videolock.lock" ]; then
+    lpid=$(tr -d '[:space:]' <"$CACHE/videolock.lock" || true)
+    if [ -n "$lpid" ] && kill -0 "$lpid" 2>/dev/null; then
+      armed=1
+      break
+    fi
+  fi
+  sleep 0.2
+done
+if [ "$armed" -eq 1 ]; then
+  lpid=$(tr -d '[:space:]' <"$CACHE/videolock.lock")
+  sleep 1
+  kill -KILL "$lpid" 2>/dev/null || true
+  sleep 0.3
+  # stale lockfile should remain or be empty-owner
+  "$BIN/videolock" --recover >/tmp/videolock-recover.out 2>&1
+  rec_ec=$?
+  [ "$rec_ec" -eq 0 ] && ok "videolock --recover exit 0" || fail "videolock --recover exit $rec_ec"
+  if [ -f "$CACHE/videolock.lock" ]; then
+    spid=$(tr -d '[:space:]' <"$CACHE/videolock.lock" || true)
+    if [ -n "$spid" ] && kill -0 "$spid" 2>/dev/null; then
+      fail "locker still alive after --recover"
+    else
+      ok "no live locker after --recover"
+    fi
+  else
+    ok "lockfile removed after --recover"
+  fi
+  # new lock should work (stale flock cleared)
+  "$BIN/videolock.sh" >/dev/null 2>&1 &
+  rearm=0
+  for i in $(seq 1 25); do
+    if [ -f "$CACHE/videolock.lock" ]; then
+      npid=$(tr -d '[:space:]' <"$CACHE/videolock.lock" || true)
+      if [ -n "$npid" ] && kill -0 "$npid" 2>/dev/null; then
+        rearm=1
+        break
+      fi
+    fi
+    sleep 0.2
+  done
+  [ "$rearm" -eq 1 ] && ok "re-lock after recover" || fail "could not re-lock after recover"
+  "$BIN/videolock-unlock.sh" >/dev/null 2>&1 || true
+else
+  skip "crash recover (could not arm)"
+fi
+wait "$crash_bg" 2>/dev/null || true
+
+# HiDPI scale reported
+echo "-- hidpi"
+scale_line=$("$BIN/videolock" --check 2>/dev/null | grep 'scale:' || true)
+[ -n "$scale_line" ] && ok "$scale_line" || skip "scale not reported"
+
 # layout note (cannot fully automate Alt+Shift without uinput)
 echo "-- layout"
 kb=$(hyprctl getoption input:kb_layout -j 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin).get("str",""))' 2>/dev/null || true)

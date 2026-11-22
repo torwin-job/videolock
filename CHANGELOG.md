@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.2 — 2026-11-22
+
+### Reliability & HiDPI
+
+- Scale panel/fonts from Hyprland monitor scale (or `VIDEOLOCK_SCALE`)
+- `videolock --recover` / `videolock-unlock.sh --recover` clears hung locker + crash overlay + stale lockfile
+- Stale flock auto-cleared so lock works again after crash
+- `install.sh --hypridle` writes a timestamped `.videolock.bak.*` before patching
+- `install.sh --bind` ensures a single Super+L → videolock path and disables competing `loginctl lock-session` binds
+- Smoke test covers crash→recover→re-lock
+
 ## 0.2.1 — 2026-11-22
 
 ### Critical UX (keyboard)

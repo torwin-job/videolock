@@ -2,8 +2,19 @@
 
 Wayland **session lock** for Hyprland: GTK4 + `Gtk4SessionLock` + PAM, with an animated JPEG (or optional video) background.
 
+<p align="center">
+  <img src="assets/screenshots/hero.jpg" alt="videolock hero" width="100%">
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/wide.jpg" alt="videolock wide" width="48%">
+  &nbsp;
+  <img src="assets/screenshots/panel.jpg" alt="videolock panel" width="48%">
+</p>
+
 ```bash
-git clone <this-repo> && cd videolock
+git clone https://github.com/torwin-job/videolock.git
+cd videolock
 ./install.sh --video ~/Pictures/wall.mp4 --hypridle
 ```
 

@@ -16,7 +16,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-__version__ = "0.2.4"
+__version__ = "0.3.0"
 
 os.environ.setdefault("GTK_IM_MODULE", "none")
 os.environ.setdefault("GST_PLUGIN_FEATURE_RANK", "vah264dec:MAX,vaapih264dec:MAX")
@@ -105,6 +105,14 @@ _STRINGS = {
         "wait": "wait {n} s",
         "pam_missing": "python-pam missing — lock cancelled",
         "caps": "CAPS",
+        "sleep": "sleep",
+        "reboot": "reboot",
+        "shutdown": "power",
+        "charging": "chg",
+        "battery": "bat {n}%",
+        "net_off": "net off",
+        "wifi": "wifi",
+        "eth": "eth",
     },
     "ru": {
         "hint": "ввод пароля · Enter — войти",
@@ -112,6 +120,14 @@ _STRINGS = {
         "wait": "подождите {n} с",
         "pam_missing": "Нет модуля pam — блокировка отменена",
         "caps": "CAPS",
+        "sleep": "сон",
+        "reboot": "перезагрузка",
+        "shutdown": "выкл",
+        "charging": "зар",
+        "battery": "бат {n}%",
+        "net_off": "нет сети",
+        "wifi": "wifi",
+        "eth": "eth",
     },
 }
 
@@ -387,13 +403,184 @@ def _px(n: float, scale: float) -> str:
     return f"{max(1, int(round(n * scale)))}px"
 
 
-def _build_css(scale: float | None = None) -> bytes:
+def _parse_wallbash_dcol(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    try:
+        for line in path.read_text(errors="ignore").splitlines():
+            line = line.strip()
+            if not line or "=" not in line or line.startswith("#"):
+                continue
+            k, _, v = line.partition("=")
+            k, v = k.strip(), v.strip().strip('"').strip("'")
+            if k.startswith("dcol_") and v and "rgba" not in v.lower():
+                out[k] = v if v.startswith("#") else f"#{v}"
+    except OSError:
+        pass
+    return out
+
+
+def _wallbash_theme() -> dict[str, str]:
+    """Pull accent/panel colors from HyDE wallbash (~/.cache/hyde/wall.dcol)."""
+    defaults = {
+        "bg": "#0b1020",
+        "panel": "rgba(17,22,40,0.62)",
+        "border": "rgba(120,160,255,0.35)",
+        "dots_bg": "rgba(12,16,28,0.92)",
+        "dots_border": "rgba(120,160,255,0.55)",
+        "clock": "#e8eeff",
+        "date": "#b8c4e0",
+        "user": "#89b4fa",
+        "dots": "#e8eeff",
+        "error": "#f38ba8",
+        "hint": "#7f8aad",
+        "status": "#a6adc8",
+        "accent": "#89b4fa",
+        "btn_bg": "rgba(17,22,40,0.85)",
+        "btn_fg": "#e8eeff",
+        "warn": "#f9e2af",
+        "caps": "#fab387",
+    }
+    if os.environ.get("VIDEOLOCK_WALLBASH", "1") == "0":
+        return defaults
+    env = os.environ.get("VIDEOLOCK_WALLBASH_FILE", "").strip()
+    candidates = []
+    if env:
+        candidates.append(Path(env).expanduser())
+    candidates.extend(
+        [
+            Path.home() / ".cache/hyde/wall.dcol",
+            Path.home() / ".cache/hyde/wallbash/colors.inc",
+        ]
+    )
+    dcol: dict[str, str] = {}
+    for p in candidates:
+        if p.is_file():
+            dcol = _parse_wallbash_dcol(p)
+            if dcol:
+                log(f"wallbash theme from {p}")
+                break
+    if not dcol:
+        return defaults
+
+    def hex_rgba(h: str, a: float) -> str:
+        h = h.lstrip("#")
+        if len(h) != 6:
+            return defaults["panel"]
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        return f"rgba({r},{g},{b},{a})"
+
+    pry = dcol.get("dcol_pry1") or dcol.get("dcol_ansi_black")
+    txt = dcol.get("dcol_txt1") or dcol.get("dcol_ansi_white") or defaults["clock"]
+    accent = (
+        dcol.get("dcol_1xa7")
+        or dcol.get("dcol_1xa6")
+        or dcol.get("dcol_1xa5")
+        or defaults["accent"]
+    )
+    muted = dcol.get("dcol_1xa5") or defaults["date"]
+    soft = dcol.get("dcol_1xa4") or defaults["hint"]
+    border = dcol.get("dcol_1xa6") or accent
+    t = dict(defaults)
+    if pry:
+        t["bg"] = pry
+        t["panel"] = hex_rgba(pry, 0.72)
+        t["dots_bg"] = hex_rgba(pry, 0.92)
+        t["btn_bg"] = hex_rgba(pry, 0.88)
+    t["clock"] = txt
+    t["dots"] = txt
+    t["btn_fg"] = txt
+    t["user"] = accent
+    t["accent"] = accent
+    t["date"] = muted
+    t["hint"] = soft
+    t["status"] = soft
+    bh = border.lstrip("#")
+    if len(bh) == 6:
+        t["border"] = hex_rgba("#" + bh, 0.45)
+        t["dots_border"] = hex_rgba("#" + bh, 0.55)
+    return t
+
+
+def _battery_info() -> tuple[int | None, str]:
+    base = Path("/sys/class/power_supply")
+    if not base.is_dir():
+        return None, ""
+    for bat in sorted(base.glob("BAT*")):
+        try:
+            cap = int((bat / "capacity").read_text().strip())
+            st = (bat / "status").read_text().strip()
+            return cap, st
+        except Exception:
+            continue
+    return None, ""
+
+
+def _network_info() -> str:
+    try:
+        r = subprocess.run(
+            ["nmcli", "-t", "-f", "TYPE,STATE,CONNECTION", "device"],
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+            check=False,
+        )
+        if r.returncode != 0:
+            return _("net_off")
+        wifi = eth = None
+        for line in (r.stdout or "").splitlines():
+            parts = line.split(":")
+            if len(parts) < 2:
+                continue
+            typ, state = parts[0], parts[1]
+            conn = parts[2] if len(parts) > 2 else ""
+            if typ == "wifi" and state.startswith("connected"):
+                wifi = conn or _("wifi")
+            elif typ == "ethernet" and state.startswith("connected"):
+                eth = conn or _("eth")
+        if wifi:
+            return wifi[:18]
+        if eth:
+            return eth[:18]
+    except Exception:
+        pass
+    return _("net_off")
+
+
+def _sys_status_text() -> str:
+    parts: list[str] = []
+    cap, st = _battery_info()
+    if cap is not None:
+        label = _("battery", n=cap)
+        if st.lower() in ("charging", "full", "not charging"):
+            label = f"{label} · {_('charging')}"
+        parts.append(label)
+    parts.append(_network_info())
+    return " · ".join(parts)
+
+
+def _power_action(action: str) -> None:
+    """Suspend / reboot / poweroff via systemctl (session stays locked until resume)."""
+    log(f"power action: {action}")
+    cmd = {
+        "sleep": ["systemctl", "suspend"],
+        "reboot": ["systemctl", "reboot"],
+        "shutdown": ["systemctl", "poweroff"],
+    }.get(action)
+    if not cmd:
+        return
+    try:
+        subprocess.Popen(cmd, start_new_session=True)
+    except Exception as e:
+        log(f"power action failed: {type(e).__name__}")
+
+
+def _build_css(scale: float | None = None, theme: dict[str, str] | None = None) -> bytes:
     s = scale if scale is not None else _ui_scale()
     font = _font_stack()
-    # Pixelon on every label via window/panel inheritance + explicit classes
+    t = theme or _wallbash_theme()
     return f"""
 window {{
-  background: #0b1020;
+  background: {t['bg']};
   font-family: {font};
 }}
 label, button, entry, textview {{
@@ -401,30 +588,48 @@ label, button, entry, textview {{
 }}
 .dim {{ background: rgba(8,12,24,0.22); }}
 .panel {{
-  background: rgba(17,22,40,0.62);
-  border: 1px solid rgba(120,160,255,0.35);
+  background: {t['panel']};
+  border: 1px solid {t['border']};
   border-radius: {_px(18, s)};
   padding: {_px(22, s)} {_px(28, s)};
   font-family: {font};
 }}
-.clock {{ color: #e8eeff; font-size: {_px(62, s)}; font-weight: 400; font-family: {font}; }}
-.date {{ color: #b8c4e0; font-size: {_px(15, s)}; margin-bottom: {_px(10, s)}; font-family: {font}; }}
-.user {{ color: #89b4fa; font-size: {_px(14, s)}; margin-bottom: {_px(10, s)}; font-family: {font}; }}
+.clock {{ color: {t['clock']}; font-size: {_px(62, s)}; font-weight: 400; font-family: {font}; }}
+.date {{ color: {t['date']}; font-size: {_px(15, s)}; margin-bottom: {_px(10, s)}; font-family: {font}; }}
+.user {{ color: {t['user']}; font-size: {_px(14, s)}; margin-bottom: {_px(10, s)}; font-family: {font}; }}
 .dots {{
-  color: #e8eeff; font-size: {_px(24, s)}; letter-spacing: {_px(5, s)};
+  color: {t['dots']}; font-size: {_px(24, s)}; letter-spacing: {_px(5, s)};
   min-width: {_px(280, s)}; min-height: {_px(42, s)}; padding: {_px(8, s)} {_px(14, s)};
-  border-radius: {_px(12, s)}; background: rgba(12,16,28,0.92);
-  border: 1px solid rgba(120,160,255,0.55);
+  border-radius: {_px(12, s)}; background: {t['dots_bg']};
+  border: 1px solid {t['dots_border']};
   font-family: {font};
 }}
-.error {{ color: #f38ba8; font-size: {_px(13, s)}; min-height: {_px(16, s)}; margin-top: {_px(6, s)}; font-family: {font}; }}
-.hint {{ color: #7f8aad; font-size: {_px(12, s)}; margin-top: {_px(8, s)}; font-family: {font}; }}
+.error {{ color: {t['error']}; font-size: {_px(13, s)}; min-height: {_px(16, s)}; margin-top: {_px(6, s)}; font-family: {font}; }}
+.hint {{ color: {t['hint']}; font-size: {_px(12, s)}; margin-top: {_px(8, s)}; font-family: {font}; }}
 .status {{
-  color: #a6adc8; font-size: {_px(12, s)}; margin-top: {_px(8, s)}; letter-spacing: {_px(2, s)};
+  color: {t['status']}; font-size: {_px(12, s)}; margin-top: {_px(8, s)}; letter-spacing: {_px(2, s)};
   font-family: {font};
 }}
-.status-warn {{ color: #f9e2af; }}
-.status-caps {{ color: #fab387; }}
+.status-warn {{ color: {t['warn']}; }}
+.status-caps {{ color: {t['caps']}; }}
+.sys {{
+  color: {t['status']}; font-size: {_px(12, s)}; margin-top: {_px(10, s)};
+  font-family: {font};
+}}
+.sys-low {{ color: {t['error']}; }}
+.power-row {{ margin-top: {_px(14, s)}; }}
+button.power-btn, .power-btn {{
+  background: {t['btn_bg']};
+  color: {t['btn_fg']};
+  border: 1px solid {t['border']};
+  border-radius: {_px(10, s)};
+  padding: {_px(8, s)} {_px(12, s)};
+  font-size: {_px(11, s)};
+  font-family: {font};
+  min-width: {_px(88, s)};
+}}
+button.power-btn:hover, .power-btn:hover {{ border-color: {t['accent']}; color: {t['accent']}; }}
+button.power-btn:active, .power-btn:active {{ background: {t['dots_bg']}; }}
 """.encode()
 
 
@@ -449,6 +654,7 @@ class VideoLock:
         self._using_frames = False
         self._shutting_down = False
         self._status_labels: list[Gtk.Label] = []
+        self._sys_labels: list[Gtk.Label] = []
         self._layout_code = "?"
         self._caps = False
 
@@ -536,6 +742,8 @@ class VideoLock:
             GLib.timeout_add(200, self._retry_lock, 1)
         GLib.timeout_add_seconds(1, self._tick_clock)
         GLib.timeout_add(400, self._tick_status)
+        GLib.timeout_add_seconds(5, self._tick_sys)
+        self._refresh_sys_labels()
 
     def _retry_lock(self, attempt: int):
         if self.lock.is_locked():
@@ -593,6 +801,23 @@ class VideoLock:
         if self._shutting_down:
             return False
         self._poll_status()
+        return True
+
+    def _refresh_sys_labels(self) -> None:
+        text = _sys_status_text()
+        cap, _st = _battery_info()
+        low = cap is not None and cap <= 20
+        for lab in self._sys_labels:
+            lab.set_label(text)
+            if low:
+                lab.add_css_class("sys-low")
+            else:
+                lab.remove_css_class("sys-low")
+
+    def _tick_sys(self):
+        if self._shutting_down:
+            return False
+        self._refresh_sys_labels()
         return True
 
     def _update_dots(self):
@@ -895,8 +1120,27 @@ class VideoLock:
             hint.add_css_class("hint")
             status = Gtk.Label(label=self._status_text())
             status.add_css_class("status")
+            sysinfo = Gtk.Label(label=_sys_status_text())
+            sysinfo.add_css_class("sys")
 
-            for w in (clock, date, user, dots, err, hint, status):
+            power = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            power.add_css_class("power-row")
+            power.set_halign(Gtk.Align.CENTER)
+            for action, label_key in (
+                ("sleep", "sleep"),
+                ("reboot", "reboot"),
+                ("shutdown", "shutdown"),
+            ):
+                btn = Gtk.Button(label=_(label_key))
+                btn.add_css_class("power-btn")
+                btn.set_focusable(False)
+                btn.connect(
+                    "clicked",
+                    lambda _b, act=action: _power_action(act),
+                )
+                power.append(btn)
+
+            for w in (clock, date, user, dots, err, hint, status, sysinfo, power):
                 panel.append(w)
             overlay.add_overlay(panel)
 
@@ -904,8 +1148,10 @@ class VideoLock:
             self._dot_labels.append(dots)
             self._err_labels.append(err)
             self._status_labels.append(status)
+            self._sys_labels.append(sysinfo)
             self._windows.append(win)
             self._refresh_status_labels()
+            self._refresh_sys_labels()
 
             key = Gtk.EventControllerKey()
             key.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
@@ -997,9 +1243,10 @@ def main(argv: list[str] | None = None) -> int:
     def on_activate(app: Gtk.Application):
         app.hold()
         scale = _ui_scale()
-        log(f"ui scale={scale:.2f}")
+        theme = _wallbash_theme()
+        log(f"ui scale={scale:.2f} accent={theme.get('accent')}")
         css = Gtk.CssProvider()
-        css.load_from_data(_build_css(scale))
+        css.load_from_data(_build_css(scale, theme))
         display = Gdk.Display.get_default()
         Gtk.StyleContext.add_provider_for_display(
             display, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION

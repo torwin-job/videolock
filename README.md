@@ -28,6 +28,9 @@ Then bind Super+L (see [`examples/`](examples/)) and lock.
 - Default background: JPEG frame strip (reliable under session-lock)
 - Optional `VIDEOLOCK_GST=1` for experimental `Gtk.Video`
 - XDG paths, no hardcoded usernames/themes in core
+- Battery + network status; Sleep / Reboot / Power buttons
+- Wallbash accent colors from HyDE wallpaper palette
+- Pixelon UI (matches SDDM Astronaut)
 
 ## Dependencies
 
@@ -93,6 +96,12 @@ $UNLOCK_CMD = $HOME/.local/bin/videolock-unlock.sh
 | `VIDEOLOCK_DENSITY=0.95` | shrink/grow panel vs monitor scale (default 0.95) |
 
 On lock, videolock **resets the keyboard to layout 0** (usually `us`) and shows `US`/`RU` + `CAPS` on the panel. Use `bindl` (or Lua `locked = true`) for layout hotkeys — see `examples/`.
+
+### Battery / network / power
+
+The panel shows battery % + Wi‑Fi/Ethernet name and buttons for **sleep / reboot / power** (`systemctl`).
+
+Colors follow HyDE **wallbash** (`~/.cache/hyde/wall.dcol`) when present. Disable with `VIDEOLOCK_WALLBASH=0`.
 
 ### Crash recovery
 

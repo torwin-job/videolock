@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0 — 2026-11-22
+
+- Battery + network line on the lock panel
+- Sleep / Reboot / Power buttons (`systemctl`)
+- Wallbash theme colors from `~/.cache/hyde/wall.dcol` (disable: `VIDEOLOCK_WALLBASH=0`)
+- Updated live screenshots + 5s clip
+
 ## 0.2.4 — 2026-11-22
 
 - Pixelon on all labels (window/panel/`label` inheritance, not only clock)

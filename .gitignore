@@ -8,14 +8,15 @@ __pycache__/
 .DS_Store
 
 # Generated assets (users prepare locally)
-# (do not commit large media)
 *.mp4
 *.mkv
 *.webm
 !examples/**
+!assets/screenshots/
 !assets/screenshots/**
 
 # IDE
 .idea/
 .vscode/
 .cursor/
+.preview/

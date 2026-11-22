@@ -16,7 +16,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 
 os.environ.setdefault("GTK_IM_MODULE", "none")
 os.environ.setdefault("GST_PLUGIN_FEATURE_RANK", "vah264dec:MAX,vaapih264dec:MAX")
@@ -638,15 +638,16 @@ label, button, entry, textview {{
 }}
 .status-warn {{ color: {t['warn']}; }}
 .status-caps {{ color: {t['caps']}; }}
-.corner-dock {{
+.corner-tray {{
   margin: 0 {_px(22, s)} {_px(22, s)} 0;
+}}
+.corner-dock {{
   padding: {_px(10, s)} {_px(12, s)};
   border-radius: {_px(14, s)};
   background: {t['panel']};
   border: 1px solid {t['border']};
 }}
-.info-row {{ }}
-.power-row {{ margin-top: {_px(8, s)}; }}
+.info-row, .power-row {{ }}
 button.info-chip, .info-chip,
 button.power-btn, .power-btn {{
   background: {t['btn_bg']};
@@ -1186,15 +1187,15 @@ class VideoLock:
                 panel.append(w)
             overlay.add_overlay(panel)
 
-            # Status chips + power actions: bottom-right dock, separate from unlock panel.
-            corner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-            corner.add_css_class("corner-dock")
-            corner.set_halign(Gtk.Align.END)
-            corner.set_valign(Gtk.Align.END)
+            # Two sibling docks bottom-right: [bat|wifi] then [sleep|reboot|power].
+            tray = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            tray.add_css_class("corner-tray")
+            tray.set_halign(Gtk.Align.END)
+            tray.set_valign(Gtk.Align.END)
 
-            info = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            info.add_css_class("info-row")
-            info.set_halign(Gtk.Align.END)
+            status_dock = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            status_dock.add_css_class("corner-dock")
+            status_dock.add_css_class("info-row")
             cap0, st0 = _battery_info()
             kind0, net0 = _network_info()
             bat_text0 = f"{cap0}%" if cap0 is not None else "—"
@@ -1204,12 +1205,12 @@ class VideoLock:
             net_btn, net_img, net_lab = _make_icon_chip(
                 _network_icon_name(kind0), net0, "info-chip"
             )
-            info.append(bat_btn)
-            info.append(net_btn)
+            status_dock.append(bat_btn)
+            status_dock.append(net_btn)
 
-            power = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            power.add_css_class("power-row")
-            power.set_halign(Gtk.Align.END)
+            power_dock = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            power_dock.add_css_class("corner-dock")
+            power_dock.add_css_class("power-row")
             for action, label_key, icon_name in (
                 ("sleep", "sleep", "system-suspend-symbolic"),
                 ("reboot", "reboot", "system-reboot-symbolic"),
@@ -1220,11 +1221,11 @@ class VideoLock:
                     "clicked",
                     lambda _b, act=action: _power_action(act),
                 )
-                power.append(btn)
+                power_dock.append(btn)
 
-            corner.append(info)
-            corner.append(power)
-            overlay.add_overlay(corner)
+            tray.append(status_dock)
+            tray.append(power_dock)
+            overlay.add_overlay(tray)
 
             self._clock_pairs.append((clock, date))
             self._dot_labels.append(dots)

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.3 — 2026-11-22
+
+- Split corner into two docks: battery/Wi‑Fi block left of the power block
+
 ## 0.3.2 — 2026-11-22
 
 - Bottom-right corner dock: battery + Wi‑Fi as separate icon chips; power buttons with symbolic icons

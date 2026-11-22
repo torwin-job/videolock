@@ -1,0 +1,713 @@
+#!/usr/bin/env python3
+"""videolock — Hyprland / Wayland session lock (GTK4 + Gtk4SessionLock + PAM)."""
+from __future__ import annotations
+
+import argparse
+import fcntl
+import locale
+import os
+import pwd
+import signal
+import sys
+import time
+import traceback
+from datetime import datetime
+from pathlib import Path
+
+__version__ = "0.2.0"
+
+os.environ.setdefault("GTK_IM_MODULE", "none")
+os.environ.setdefault("GST_PLUGIN_FEATURE_RANK", "vah264dec:MAX,vaapih264dec:MAX")
+
+from ctypes import CDLL
+
+for lib in ("libgtk4-layer-shell.so", "libgtk-session-lock.so"):
+    try:
+        CDLL(lib)
+    except OSError:
+        pass
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Gdk", "4.0")
+gi.require_version("Gtk4SessionLock", "1.0")
+
+from gi.repository import Gdk, GLib, Gio, Gtk, Gtk4SessionLock as SessionLock
+
+try:
+    import pam
+except ImportError:
+    pam = None
+
+
+# --- paths (XDG + env overrides) -------------------------------------------------
+
+def _xdg_home(env_key: str, default_under_home: str) -> Path:
+    raw = os.environ.get(env_key)
+    if raw:
+        return Path(raw).expanduser()
+    return Path.home() / default_under_home
+
+
+CACHE_DIR = _xdg_home("XDG_CACHE_HOME", ".cache") / "videolock"
+DATA_DIR = _xdg_home("XDG_DATA_HOME", ".local/share") / "videolock"
+CONFIG_DIR = _xdg_home("XDG_CONFIG_HOME", ".config") / "videolock"
+
+for _d in (CACHE_DIR, DATA_DIR):
+    try:
+        _d.mkdir(parents=True, exist_ok=True)
+        os.chmod(_d, 0o700)
+    except OSError:
+        pass
+
+LOG = CACHE_DIR / "videolock.log"
+LOCKFILE = CACHE_DIR / "videolock.lock"
+
+# Asset resolution order: env → data dir → legacy ~/Videos/wallpapers (compat)
+def _resolve_asset(env_name: str, *candidates: Path) -> Path:
+    env = os.environ.get(env_name)
+    if env:
+        return Path(env).expanduser()
+    for c in candidates:
+        if c.is_file() or (env_name.endswith("FRAMES") and c.is_dir()):
+            return c
+    return candidates[0]
+
+
+POSTER = _resolve_asset(
+    "VIDEOLOCK_POSTER",
+    DATA_DIR / "poster.png",
+    DATA_DIR / "poster.jpg",
+    Path.home() / "Videos/wallpapers/login-lock.png",
+)
+VIDEO = _resolve_asset(
+    "VIDEOLOCK_VIDEO",
+    DATA_DIR / "video.mp4",
+    Path.home() / "Videos/wallpapers/login-lock.mp4",
+)
+FRAME_DIR = _resolve_asset(
+    "VIDEOLOCK_FRAMES",
+    DATA_DIR / "frames",
+    Path.home() / "Videos/wallpapers/login-frames",
+)
+
+_lock_fd = None
+
+# --- i18n -----------------------------------------------------------------------
+
+_STRINGS = {
+    "en": {
+        "hint": "type password · Enter to unlock",
+        "bad_password": "wrong password",
+        "wait": "wait {n} s",
+        "pam_missing": "python-pam missing — lock cancelled",
+    },
+    "ru": {
+        "hint": "ввод пароля · Enter — войти",
+        "bad_password": "неверный пароль",
+        "wait": "подождите {n} с",
+        "pam_missing": "Нет модуля pam — блокировка отменена",
+    },
+}
+
+
+def _ui_lang() -> str:
+    forced = os.environ.get("VIDEOLOCK_LANG", "").lower().strip()
+    if forced in _STRINGS:
+        return forced
+    try:
+        loc = locale.getlocale()[0] or ""
+    except Exception:
+        loc = ""
+    if loc.lower().startswith("ru"):
+        return "ru"
+    return "en"
+
+
+def _(key: str, **kwargs) -> str:
+    lang = _ui_lang()
+    text = _STRINGS.get(lang, _STRINGS["en"]).get(key) or _STRINGS["en"][key]
+    return text.format(**kwargs) if kwargs else text
+
+
+# --- helpers --------------------------------------------------------------------
+
+def _acquire_singleton() -> bool:
+    global _lock_fd
+    try:
+        _lock_fd = open(LOCKFILE, "w")
+        fcntl.flock(_lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _lock_fd.write(str(os.getpid()))
+        _lock_fd.flush()
+        try:
+            os.chmod(LOCKFILE, 0o600)
+        except OSError:
+            pass
+        return True
+    except OSError:
+        return False
+
+
+def log(msg: str) -> None:
+    line = f"{datetime.now().strftime('%H:%M:%S.%f')[:-3]} {msg}"
+    try:
+        fd = os.open(str(LOG), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+
+def _wipe_bytearray(buf: bytearray) -> None:
+    for i in range(len(buf)):
+        buf[i] = 0
+    buf.clear()
+
+
+def _font_stack() -> str:
+    custom = os.environ.get("VIDEOLOCK_FONT", "").strip()
+    if custom:
+        return f'"{custom}", monospace'
+    return '"JetBrainsMono Nerd Font", "JetBrains Mono", "monospace"'
+
+
+def _build_css() -> bytes:
+    font = _font_stack()
+    return f"""
+window {{ background: #0b1020; }}
+.dim {{ background: rgba(8,12,24,0.22); }}
+.panel {{
+  background: rgba(17,22,40,0.62);
+  border: 1px solid rgba(120,160,255,0.35);
+  border-radius: 22px;
+  padding: 28px 34px;
+}}
+.clock {{ color: #e8eeff; font-size: 76px; font-weight: 700; font-family: {font}; }}
+.date {{ color: #b8c4e0; font-size: 18px; margin-bottom: 14px; font-family: {font}; }}
+.user {{ color: #89b4fa; font-size: 15px; margin-bottom: 12px; font-family: {font}; }}
+.dots {{
+  color: #e8eeff; font-size: 28px; letter-spacing: 6px;
+  min-width: 320px; min-height: 48px; padding: 10px 16px;
+  border-radius: 14px; background: rgba(12,16,28,0.92);
+  border: 1px solid rgba(120,160,255,0.55);
+  font-family: {font};
+}}
+.error {{ color: #f38ba8; font-size: 13px; min-height: 18px; margin-top: 8px; }}
+.hint {{ color: #7f8aad; font-size: 12px; margin-top: 10px; font-family: {font}; }}
+""".encode()
+
+
+# --- locker ---------------------------------------------------------------------
+
+class VideoLock:
+    def __init__(self, app: Gtk.Application):
+        self.app = app
+        self.user = pwd.getpwuid(os.getuid()).pw_name
+        self._pw = bytearray()
+        self._fail_count = 0
+        self._unlock_blocked_until = 0.0
+        self._clock_pairs: list[tuple[Gtk.Label, Gtk.Label]] = []
+        self._dot_labels: list[Gtk.Label] = []
+        self._err_labels: list[Gtk.Label] = []
+        self._monitors_done: set[str] = set()
+        self._windows: list[Gtk.Window] = []
+        self._bg_stack: list[Gtk.Stack] = []
+        self._media = None
+        self._frame_textures: list = []
+        self._frame_i = 0
+        self._using_frames = False
+        self._shutting_down = False
+
+        self.lock = SessionLock.Instance.new()
+        self.lock.connect("locked", lambda *_: log("locked"))
+        self.lock.connect("unlocked", self._on_unlocked)
+        self.lock.connect("failed", self._on_failed)
+        self.lock.connect("monitor", self._on_monitor)
+
+        signal.signal(signal.SIGTERM, self._on_signal)
+        signal.signal(signal.SIGINT, self._on_signal)
+
+    def _on_signal(self, signum, _frame):
+        log(f"signal {signum} — graceful unlock")
+        GLib.idle_add(self._graceful_unlock)
+
+    def _graceful_unlock(self):
+        if self._shutting_down:
+            return False
+        try:
+            if self.lock.is_locked():
+                self.lock.unlock()
+            else:
+                self._shutdown()
+        except Exception as e:
+            log(f"graceful unlock: {e}")
+            self._shutdown()
+        return False
+
+    def _on_unlocked(self, *_):
+        log("unlocked")
+        self._shutdown()
+
+    def _on_failed(self, *_):
+        log("failed")
+        self._shutdown()
+
+    def _shutdown(self):
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+        self._wipe_password()
+        if self._media is not None:
+            try:
+                self._media.pause()
+            except Exception:
+                pass
+            self._media = None
+        try:
+            self.app.release()
+        except Exception:
+            pass
+        self.app.quit()
+
+    def start(self) -> None:
+        if pam is None:
+            log("FATAL: python pam module missing — refusing to lock")
+            try:
+                from subprocess import Popen
+                Popen(
+                    ["notify-send", "-u", "critical", "videolock", _("pam_missing")],
+                    start_new_session=True,
+                )
+            except Exception:
+                pass
+            self.app.quit()
+            return
+        if not SessionLock.is_supported():
+            log("unsupported: ext-session-lock-v1")
+            self._shutdown()
+            return
+        self.app.hold()
+        log(
+            f"lock() video={VIDEO} frames={FRAME_DIR} poster={POSTER} "
+            f"gst={os.environ.get('VIDEOLOCK_GST', '0')}"
+        )
+        ok = self.lock.lock()
+        log(f"lock -> {ok!r} locked={self.lock.is_locked()}")
+        if not ok and not self.lock.is_locked():
+            GLib.timeout_add(200, self._retry_lock, 1)
+        GLib.timeout_add_seconds(1, self._tick_clock)
+
+    def _retry_lock(self, attempt: int):
+        if self.lock.is_locked():
+            return False
+        ok = self.lock.lock()
+        if ok or self.lock.is_locked():
+            return False
+        if attempt >= 5:
+            self._shutdown()
+            return False
+        GLib.timeout_add(200, self._retry_lock, attempt + 1)
+        return False
+
+    def _tick_clock(self):
+        now = datetime.now()
+        t, d = now.strftime("%H:%M"), now.strftime("%A, %d %B")
+        for c, dt in self._clock_pairs:
+            c.set_label(t)
+            dt.set_label(d)
+        return True
+
+    def _update_dots(self):
+        dots = "●" * len(self._pw) if self._pw else " "
+        for lab in self._dot_labels:
+            lab.set_label(dots)
+
+    def _wipe_password(self):
+        _wipe_bytearray(self._pw)
+
+    def _clear_password(self):
+        self._wipe_password()
+        self._update_dots()
+
+    def _authenticate(self) -> bool:
+        if pam is None:
+            return False
+        secret = self._pw.decode("utf-8", errors="surrogateescape")
+        try:
+            return bool(pam.pam().authenticate(self.user, secret))
+        except Exception as e:
+            log(f"pam error: {type(e).__name__}")
+            return False
+        finally:
+            secret = "\0" * len(secret)
+            del secret
+            self._wipe_password()
+
+    def _set_errors(self, text: str):
+        for err in self._err_labels:
+            err.set_label(text)
+
+    def _try_unlock(self):
+        now = time.monotonic()
+        if now < self._unlock_blocked_until:
+            left = int(self._unlock_blocked_until - now) + 1
+            self._set_errors(_("wait", n=left))
+            return
+
+        if self._authenticate():
+            self._fail_count = 0
+            self.lock.unlock()
+            return
+
+        self._fail_count += 1
+        delay = min(8.0, 0.5 * (2 ** min(self._fail_count - 1, 4)))
+        self._unlock_blocked_until = time.monotonic() + delay
+        self._set_errors(_("bad_password"))
+        self._clear_password()
+        GLib.timeout_add(int(delay * 1000), self._clear_backoff_message)
+
+    def _clear_backoff_message(self):
+        if time.monotonic() >= self._unlock_blocked_until:
+            self._set_errors("")
+        return False
+
+    def _on_key(self, _ctrl, keyval: int, _keycode: int, state: Gdk.ModifierType) -> bool:
+        if keyval in (
+            Gdk.KEY_Shift_L, Gdk.KEY_Shift_R, Gdk.KEY_Control_L, Gdk.KEY_Control_R,
+            Gdk.KEY_Alt_L, Gdk.KEY_Alt_R, Gdk.KEY_Meta_L, Gdk.KEY_Meta_R,
+            Gdk.KEY_Super_L, Gdk.KEY_Super_R, Gdk.KEY_Caps_Lock, Gdk.KEY_Num_Lock,
+        ):
+            return True
+        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
+            self._try_unlock()
+            return True
+        if keyval == Gdk.KEY_Escape:
+            return True
+        if time.monotonic() < self._unlock_blocked_until:
+            return True
+        if keyval == Gdk.KEY_BackSpace:
+            if self._pw:
+                self._pw.pop()
+                self._update_dots()
+                self._set_errors("")
+            return True
+        if keyval == Gdk.KEY_u and (state & Gdk.ModifierType.CONTROL_MASK):
+            self._clear_password()
+            return True
+        ch = Gdk.keyval_to_unicode(keyval)
+        if ch and ch >= 32:
+            if len(self._pw) < 256:
+                self._pw.extend(chr(ch).encode("utf-8"))
+            self._update_dots()
+            self._set_errors("")
+            return True
+        return True
+
+    def _start_gst_video(self, stack: Gtk.Stack, video_page: Gtk.Widget):
+        if not VIDEO.is_file():
+            log("no video file")
+            self._start_frame_fallback(stack, video_page)
+            return
+        try:
+            v = Gtk.Video.new_for_filename(str(VIDEO))
+            for setter, arg in (
+                ("set_autoplay", True),
+                ("set_loop", True),
+                ("set_controls", False),
+                ("set_muted", True),
+            ):
+                try:
+                    getattr(v, setter)(arg)
+                except Exception:
+                    pass
+            v.set_hexpand(True)
+            v.set_vexpand(True)
+            try:
+                stack.remove(video_page)
+            except Exception:
+                pass
+            stack.add_named(v, "video")
+            stack.set_visible_child_name("video")
+            self._media = v
+            log("Gtk.Video started")
+            try:
+                mf = v.get_media_stream()
+                if mf is not None:
+                    mf.set_loop(True)
+                    try:
+                        mf.set_muted(True)
+                    except Exception:
+                        pass
+                    mf.play()
+            except Exception as e:
+                log(f"stream poke: {type(e).__name__}")
+
+            def watchdog():
+                try:
+                    mf = v.get_media_stream()
+                    ok = mf is not None and mf.get_playing()
+                except Exception:
+                    ok = False
+                if ok:
+                    log("watchdog: Gtk.Video ok")
+                    return False
+                log("watchdog: fallback to frames")
+                pic = Gtk.Picture()
+                if hasattr(pic, "set_content_fit"):
+                    pic.set_content_fit(Gtk.ContentFit.COVER)
+                pic.set_hexpand(True)
+                pic.set_vexpand(True)
+                try:
+                    stack.remove(v)
+                except Exception:
+                    pass
+                stack.add_named(pic, "video")
+                self._start_frame_fallback(stack, pic)
+                return False
+
+            GLib.timeout_add(1500, watchdog)
+        except Exception as e:
+            log(f"Gtk.Video fail: {type(e).__name__}")
+            self._start_frame_fallback(stack, video_page)
+
+    def _load_frame_textures(self):
+        if self._frame_textures:
+            return
+        paths = sorted(FRAME_DIR.glob("f-*.jpg")) if FRAME_DIR.is_dir() else []
+        safe: list[Path] = []
+        try:
+            root = FRAME_DIR.resolve()
+        except Exception:
+            root = FRAME_DIR
+        for fp in paths:
+            try:
+                rp = fp.resolve()
+                if root in rp.parents or rp.parent == root:
+                    safe.append(fp)
+            except Exception:
+                continue
+        paths = safe
+        if len(paths) > 24:
+            step = max(1, len(paths) // 24)
+            paths = paths[::step][:24]
+        for fp in paths:
+            try:
+                self._frame_textures.append(Gdk.Texture.new_from_filename(str(fp)))
+            except Exception as e:
+                log(f"tex skip: {type(e).__name__}")
+        log(f"textures={len(self._frame_textures)}")
+
+    def _start_frame_fallback(self, stack: Gtk.Stack, video_page: Gtk.Picture):
+        if self._using_frames:
+            return
+        self._using_frames = True
+        if self._media is not None:
+            try:
+                self._media.pause()
+            except Exception:
+                pass
+            self._media = None
+        self._load_frame_textures()
+        if not self._frame_textures:
+            log("no frames; keep poster/solid")
+            return
+        video_page.set_paintable(self._frame_textures[0])
+        stack.set_visible_child_name("video")
+
+        def tick():
+            if not self._using_frames or not self._frame_textures:
+                return False
+            self._frame_i = (self._frame_i + 1) % len(self._frame_textures)
+            tex = self._frame_textures[self._frame_i]
+            for st in self._bg_stack:
+                child = st.get_child_by_name("video")
+                if child is not None:
+                    try:
+                        child.set_paintable(tex)
+                    except Exception:
+                        pass
+            return True
+
+        GLib.timeout_add(125, tick)
+        log("frame animation running")
+
+    def _on_monitor(self, _lock, monitor: Gdk.Monitor):
+        try:
+            try:
+                mid = monitor.get_connector() or monitor.get_description() or "mon"
+            except Exception:
+                mid = "mon"
+            if mid in self._monitors_done:
+                return
+            self._monitors_done.add(mid)
+            log(f"monitor {mid}")
+
+            win = Gtk.Window()
+            win.set_decorated(False)
+            win.set_can_focus(True)
+            win.set_focusable(True)
+
+            overlay = Gtk.Overlay()
+            win.set_child(overlay)
+
+            stack = Gtk.Stack()
+            stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+            stack.set_transition_duration(200)
+            stack.set_hexpand(True)
+            stack.set_vexpand(True)
+
+            poster = Gtk.Picture()
+            if POSTER.is_file():
+                poster.set_filename(str(POSTER))
+            if hasattr(poster, "set_content_fit"):
+                poster.set_content_fit(Gtk.ContentFit.COVER)
+            poster.set_hexpand(True)
+            poster.set_vexpand(True)
+
+            video_page = Gtk.Picture()
+            if hasattr(video_page, "set_content_fit"):
+                video_page.set_content_fit(Gtk.ContentFit.COVER)
+            video_page.set_hexpand(True)
+            video_page.set_vexpand(True)
+
+            stack.add_named(poster, "poster")
+            stack.add_named(video_page, "video")
+            stack.set_visible_child_name("poster")
+            self._bg_stack.append(stack)
+
+            dim = Gtk.Box()
+            dim.add_css_class("dim")
+            dim.set_hexpand(True)
+            dim.set_vexpand(True)
+
+            overlay.set_child(stack)
+            overlay.add_overlay(dim)
+
+            panel = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            panel.add_css_class("panel")
+            panel.set_halign(Gtk.Align.CENTER)
+            panel.set_valign(Gtk.Align.CENTER)
+
+            clock = Gtk.Label(label=datetime.now().strftime("%H:%M"))
+            clock.add_css_class("clock")
+            date = Gtk.Label(label=datetime.now().strftime("%A, %d %B"))
+            date.add_css_class("date")
+            user = Gtk.Label(label=self.user)
+            user.add_css_class("user")
+            dots = Gtk.Label(label=" ")
+            dots.add_css_class("dots")
+            dots.set_xalign(0.0)
+            err = Gtk.Label(label="")
+            err.add_css_class("error")
+            hint = Gtk.Label(label=_("hint"))
+            hint.add_css_class("hint")
+
+            for w in (clock, date, user, dots, err, hint):
+                panel.append(w)
+            overlay.add_overlay(panel)
+
+            self._clock_pairs.append((clock, date))
+            self._dot_labels.append(dots)
+            self._err_labels.append(err)
+            self._windows.append(win)
+
+            key = Gtk.EventControllerKey()
+            key.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+            key.connect("key-pressed", self._on_key)
+            win.add_controller(key)
+
+            self.lock.assign_window_to_monitor(win, monitor)
+            win.present()
+            log("surface ok")
+
+            def _boot():
+                if os.environ.get("VIDEOLOCK_GST", "0") == "1":
+                    self._start_gst_video(stack, video_page)
+                else:
+                    self._start_frame_fallback(stack, video_page)
+                return False
+
+            GLib.idle_add(_boot)
+        except Exception:
+            log(traceback.format_exc())
+
+
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        prog="videolock",
+        description="Wayland session lock for Hyprland (GTK4 + PAM).",
+    )
+    p.add_argument("-V", "--version", action="version", version=f"videolock {__version__}")
+    p.add_argument(
+        "--check",
+        action="store_true",
+        help="verify dependencies and asset paths, then exit",
+    )
+    return p.parse_args(argv)
+
+
+def _check() -> int:
+    ok = True
+    print(f"videolock {__version__}")
+    print(f"  cache:  {CACHE_DIR}")
+    print(f"  data:   {DATA_DIR}")
+    print(f"  poster: {POSTER}  [{'ok' if POSTER.is_file() else 'missing'}]")
+    print(f"  video:  {VIDEO}  [{'ok' if VIDEO.is_file() else 'missing'}]")
+    nframes = len(list(FRAME_DIR.glob('f-*.jpg'))) if FRAME_DIR.is_dir() else 0
+    print(f"  frames: {FRAME_DIR}  [{nframes} jpg]")
+    if pam is None:
+        print("  pam:    MISSING (python-pam / python3-pam)")
+        ok = False
+    else:
+        print("  pam:    ok")
+    if not SessionLock.is_supported():
+        print("  lock:   ext-session-lock-v1 NOT supported on this compositor")
+        ok = False
+    else:
+        print("  lock:   supported")
+    return 0 if ok else 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+    if args.check:
+        return _check()
+
+    if not _acquire_singleton():
+        log("already running — exit")
+        return 0
+
+    try:
+        fd = os.open(str(LOG), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(f"start {datetime.now().isoformat()} v{__version__}\n")
+    except Exception:
+        pass
+
+    app = Gtk.Application(
+        application_id="org.videolock.VideoLock",
+        flags=Gio.ApplicationFlags.NON_UNIQUE,
+    )
+
+    def on_activate(app: Gtk.Application):
+        app.hold()
+        css = Gtk.CssProvider()
+        css.load_from_data(_build_css())
+        display = Gdk.Display.get_default()
+        Gtk.StyleContext.add_provider_for_display(
+            display, css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+        app._videolock = VideoLock(app)  # noqa: SLF001 — keep GC ref
+        app._videolock.start()
+
+    app.connect("activate", on_activate)
+    return app.run([]) or 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception:
+        log(traceback.format_exc())
+        raise

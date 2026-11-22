@@ -16,7 +16,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 
 os.environ.setdefault("GTK_IM_MODULE", "none")
 os.environ.setdefault("GST_PLUGIN_FEATURE_RANK", "vah264dec:MAX,vaapih264dec:MAX")
@@ -337,39 +337,50 @@ def _caps_lock_on(fallback: bool = False) -> bool:
 
 
 def _font_stack() -> str:
+    # Default: Pixelon — same pixel font as SDDM Astronaut (hyde_unified / hyprland_kath)
     custom = os.environ.get("VIDEOLOCK_FONT", "").strip()
     if custom:
-        return f'"{custom}", monospace'
-    return '"JetBrainsMono Nerd Font", "JetBrains Mono", "monospace"'
+        return f'"{custom}", "Pixelon", monospace'
+    return '"Pixelon", "pixelon", "ArcadeClassic", monospace'
 
 
 def _ui_scale() -> float:
-    """Logical UI scale for HiDPI / Hyprland fractional scale (1.0–2.5)."""
+    """Logical UI scale for HiDPI / Hyprland fractional scale (0.7–2.5)."""
     env = os.environ.get("VIDEOLOCK_SCALE", "").strip()
     if env:
         try:
-            return max(1.0, min(2.5, float(env)))
+            return max(0.7, min(2.5, float(env)))
         except ValueError:
             pass
     # Prefer Hyprland monitor scale (supports 1.2 etc.)
     raw = _hyprctl(["monitors", "-j"])
+    base = 1.0
     if raw:
         try:
             mons = json.loads(raw)
             scales = [float(m.get("scale") or 1.0) for m in mons if m]
             if scales:
-                return max(1.0, min(2.5, max(scales)))
+                base = max(scales)
         except Exception:
             pass
-    try:
-        display = Gdk.Display.get_default()
-        if display is not None:
-            mon = display.get_monitors().get_item(0)
-            if mon is not None and hasattr(mon, "get_scale_factor"):
-                return max(1.0, min(2.5, float(mon.get_scale_factor())))
-    except Exception:
-        pass
-    return 1.0
+    else:
+        try:
+            display = Gdk.Display.get_default()
+            if display is not None:
+                mon = display.get_monitors().get_item(0)
+                if mon is not None and hasattr(mon, "get_scale_factor"):
+                    base = float(mon.get_scale_factor())
+        except Exception:
+            pass
+    # Slightly denser than 1:1 so panel doesn't dominate (Pixelon reads large)
+    density = 0.88
+    dens_env = os.environ.get("VIDEOLOCK_DENSITY", "").strip()
+    if dens_env:
+        try:
+            density = max(0.7, min(1.2, float(dens_env)))
+        except ValueError:
+            pass
+    return max(0.7, min(2.5, base * density))
 
 
 def _px(n: float, scale: float) -> str:
@@ -379,29 +390,30 @@ def _px(n: float, scale: float) -> str:
 def _build_css(scale: float | None = None) -> bytes:
     s = scale if scale is not None else _ui_scale()
     font = _font_stack()
+    # Base sizes tuned smaller for Pixelon (bitmap fonts look oversized at JetBrains sizes)
     return f"""
 window {{ background: #0b1020; }}
 .dim {{ background: rgba(8,12,24,0.22); }}
 .panel {{
   background: rgba(17,22,40,0.62);
   border: 1px solid rgba(120,160,255,0.35);
-  border-radius: {_px(22, s)};
-  padding: {_px(28, s)} {_px(34, s)};
+  border-radius: {_px(16, s)};
+  padding: {_px(20, s)} {_px(26, s)};
 }}
-.clock {{ color: #e8eeff; font-size: {_px(76, s)}; font-weight: 700; font-family: {font}; }}
-.date {{ color: #b8c4e0; font-size: {_px(18, s)}; margin-bottom: {_px(14, s)}; font-family: {font}; }}
-.user {{ color: #89b4fa; font-size: {_px(15, s)}; margin-bottom: {_px(12, s)}; font-family: {font}; }}
+.clock {{ color: #e8eeff; font-size: {_px(56, s)}; font-weight: 400; font-family: {font}; }}
+.date {{ color: #b8c4e0; font-size: {_px(14, s)}; margin-bottom: {_px(10, s)}; font-family: {font}; }}
+.user {{ color: #89b4fa; font-size: {_px(13, s)}; margin-bottom: {_px(10, s)}; font-family: {font}; }}
 .dots {{
-  color: #e8eeff; font-size: {_px(28, s)}; letter-spacing: {_px(6, s)};
-  min-width: {_px(320, s)}; min-height: {_px(48, s)}; padding: {_px(10, s)} {_px(16, s)};
-  border-radius: {_px(14, s)}; background: rgba(12,16,28,0.92);
+  color: #e8eeff; font-size: {_px(22, s)}; letter-spacing: {_px(5, s)};
+  min-width: {_px(260, s)}; min-height: {_px(40, s)}; padding: {_px(8, s)} {_px(12, s)};
+  border-radius: {_px(10, s)}; background: rgba(12,16,28,0.92);
   border: 1px solid rgba(120,160,255,0.55);
   font-family: {font};
 }}
-.error {{ color: #f38ba8; font-size: {_px(13, s)}; min-height: {_px(18, s)}; margin-top: {_px(8, s)}; }}
-.hint {{ color: #7f8aad; font-size: {_px(12, s)}; margin-top: {_px(10, s)}; font-family: {font}; }}
+.error {{ color: #f38ba8; font-size: {_px(12, s)}; min-height: {_px(16, s)}; margin-top: {_px(6, s)}; font-family: {font}; }}
+.hint {{ color: #7f8aad; font-size: {_px(11, s)}; margin-top: {_px(8, s)}; font-family: {font}; }}
 .status {{
-  color: #a6adc8; font-size: {_px(13, s)}; margin-top: {_px(12, s)}; letter-spacing: {_px(2, s)};
+  color: #a6adc8; font-size: {_px(11, s)}; margin-top: {_px(8, s)}; letter-spacing: {_px(2, s)};
   font-family: {font};
 }}
 .status-warn {{ color: #f9e2af; }}

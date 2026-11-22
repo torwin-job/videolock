@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.3 — 2026-11-22
+
+- Default font: **Pixelon** (SDDM Astronaut / hyde_unified)
+- Slightly smaller panel & type (density 0.88, reduced base sizes); tune with `VIDEOLOCK_DENSITY`
+
 ## 0.2.2 — 2026-11-22
 
 ### Reliability & HiDPI

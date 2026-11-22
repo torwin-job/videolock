@@ -16,7 +16,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-__version__ = "0.3.3"
+__version__ = "0.3.4"
 
 os.environ.setdefault("GTK_IM_MODULE", "none")
 os.environ.setdefault("GST_PLUGIN_FEATURE_RANK", "vah264dec:MAX,vaapih264dec:MAX")
@@ -352,12 +352,60 @@ def _caps_lock_on(fallback: bool = False) -> bool:
     return fallback
 
 
+_FONT_AVAIL_CACHE: dict[str, bool] = {}
+
+
+def _font_available(family: str) -> bool:
+    """True if fontconfig knows this family (cached)."""
+    key = family.lower()
+    if key in _FONT_AVAIL_CACHE:
+        return _FONT_AVAIL_CACHE[key]
+    ok = False
+    try:
+        r = subprocess.run(
+            ["fc-list", "-q", f"{family}:family"],
+            capture_output=True,
+            timeout=1.0,
+            check=False,
+        )
+        ok = r.returncode == 0
+    except Exception:
+        ok = False
+    _FONT_AVAIL_CACHE[key] = ok
+    return ok
+
+
+def _quote_font(name: str) -> str:
+    return f'"{name}"'
+
+
 def _font_stack() -> str:
+    """Display/pixel stack — clock & password dots (Latin/digits)."""
     # Default: Pixelon — same pixel font as SDDM Astronaut (hyde_unified / hyprland_kath)
     custom = os.environ.get("VIDEOLOCK_FONT", "").strip()
     if custom:
-        return f'"{custom}", "Pixelon", monospace'
+        return f'{_quote_font(custom)}, "Pixelon", monospace'
     return '"Pixelon", "pixelon", "ArcadeClassic", monospace'
+
+
+def _ui_font_stack() -> str:
+    """UI stack with Cyrillic — Pixelon has no RU glyphs, so labels/buttons use a mono fallback."""
+    custom = os.environ.get("VIDEOLOCK_UI_FONT", "").strip()
+    if custom:
+        return f'{_quote_font(custom)}, "DejaVu Sans Mono", monospace'
+    # Prefer techy monos already common on HyDE / Nerd Font setups
+    for name in (
+        "JetBrainsMono Nerd Font",
+        "JetBrainsMonoNL Nerd Font",
+        "Maple Mono",
+        "CaskaydiaCove Nerd Font",
+        "Adwaita Mono",
+        "DejaVu Sans Mono",
+        "Noto Sans Mono",
+    ):
+        if _font_available(name):
+            return f'{_quote_font(name)}, "DejaVu Sans Mono", monospace'
+    return '"DejaVu Sans Mono", "Noto Sans Mono", monospace'
 
 
 def _ui_scale() -> float:
@@ -602,15 +650,17 @@ def _power_action(action: str) -> None:
 
 def _build_css(scale: float | None = None, theme: dict[str, str] | None = None) -> bytes:
     s = scale if scale is not None else _ui_scale()
-    font = _font_stack()
+    display = _font_stack()
+    ui = _ui_font_stack()
     t = theme or _wallbash_theme()
+    log(f"fonts display={display} ui={ui}")
     return f"""
 window {{
   background: {t['bg']};
-  font-family: {font};
+  font-family: {ui};
 }}
 label, button, entry, textview {{
-  font-family: {font};
+  font-family: {ui};
 }}
 .dim {{ background: rgba(8,12,24,0.22); }}
 .panel {{
@@ -618,23 +668,26 @@ label, button, entry, textview {{
   border: 1px solid {t['border']};
   border-radius: {_px(18, s)};
   padding: {_px(22, s)} {_px(28, s)};
-  font-family: {font};
+  font-family: {ui};
 }}
-.clock {{ color: {t['clock']}; font-size: {_px(62, s)}; font-weight: 400; font-family: {font}; }}
-.date {{ color: {t['date']}; font-size: {_px(15, s)}; margin-bottom: {_px(10, s)}; font-family: {font}; }}
-.user {{ color: {t['user']}; font-size: {_px(14, s)}; margin-bottom: {_px(10, s)}; font-family: {font}; }}
+.clock {{
+  color: {t['clock']}; font-size: {_px(62, s)}; font-weight: 400;
+  font-family: {display};
+}}
+.date {{ color: {t['date']}; font-size: {_px(15, s)}; margin-bottom: {_px(10, s)}; font-family: {ui}; }}
+.user {{ color: {t['user']}; font-size: {_px(14, s)}; margin-bottom: {_px(10, s)}; font-family: {display}; }}
 .dots {{
   color: {t['dots']}; font-size: {_px(24, s)}; letter-spacing: {_px(5, s)};
   min-width: {_px(280, s)}; min-height: {_px(42, s)}; padding: {_px(8, s)} {_px(14, s)};
   border-radius: {_px(12, s)}; background: {t['dots_bg']};
   border: 1px solid {t['dots_border']};
-  font-family: {font};
+  font-family: {display};
 }}
-.error {{ color: {t['error']}; font-size: {_px(13, s)}; min-height: {_px(16, s)}; margin-top: {_px(6, s)}; font-family: {font}; }}
-.hint {{ color: {t['hint']}; font-size: {_px(12, s)}; margin-top: {_px(8, s)}; font-family: {font}; }}
+.error {{ color: {t['error']}; font-size: {_px(13, s)}; min-height: {_px(16, s)}; margin-top: {_px(6, s)}; font-family: {ui}; }}
+.hint {{ color: {t['hint']}; font-size: {_px(12, s)}; margin-top: {_px(8, s)}; font-family: {ui}; }}
 .status {{
   color: {t['status']}; font-size: {_px(12, s)}; margin-top: {_px(8, s)}; letter-spacing: {_px(2, s)};
-  font-family: {font};
+  font-family: {display};
 }}
 .status-warn {{ color: {t['warn']}; }}
 .status-caps {{ color: {t['caps']}; }}
@@ -656,7 +709,7 @@ button.power-btn, .power-btn {{
   border-radius: {_px(12, s)};
   padding: {_px(6, s)} {_px(10, s)};
   font-size: {_px(11, s)};
-  font-family: {font};
+  font-family: {ui};
   min-width: {_px(0, s)};
 }}
 button.info-chip, .info-chip {{ color: {t['status']}; }}

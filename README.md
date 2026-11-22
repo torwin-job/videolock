@@ -30,7 +30,7 @@ Then bind Super+L (see [`examples/`](examples/)) and lock.
 - XDG paths, no hardcoded usernames/themes in core
 - Battery + network status; Sleep / Reboot / Power buttons
 - Wallbash accent colors from HyDE wallpaper palette
-- Pixelon UI (matches SDDM Astronaut)
+- Pixelon clock (SDDM Astronaut) + Cyrillic-capable UI mono for RU labels
 
 ## Dependencies
 
@@ -90,7 +90,8 @@ $UNLOCK_CMD = $HOME/.local/bin/videolock-unlock.sh
 | `VIDEOLOCK_VIDEO` / `POSTER` / `FRAMES` | Override paths |
 | `VIDEOLOCK_GST=1` | Try live video under lock |
 | `VIDEOLOCK_LANG=en\|ru` | UI language (default: locale) |
-| `VIDEOLOCK_FONT=…` | CSS font (default: **Pixelon**, same as SDDM Astronaut) |
+| `VIDEOLOCK_FONT=…` | Display/pixel font for clock & dots (default: **Pixelon**) |
+| `VIDEOLOCK_UI_FONT=…` | UI font for labels/buttons (auto: JetBrains/Maple/DejaVu — Pixelon has no Cyrillic) |
 | `VIDEOLOCK_RESET_LAYOUT=0` | disable auto-reset to primary layout on lock |
 | `VIDEOLOCK_SCALE=1.25` | force UI scale (default: monitor scale × density) |
 | `VIDEOLOCK_DENSITY=0.95` | shrink/grow panel vs monitor scale (default 0.95) |

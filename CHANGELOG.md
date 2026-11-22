@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.4 — 2026-11-22
+
+- Cyrillic-safe UI font: Pixelon stays on clock/dots; labels & buttons use JetBrains/Maple/DejaVu (`VIDEOLOCK_UI_FONT`)
+
 ## 0.3.3 — 2026-11-22
 
 - Split corner into two docks: battery/Wi‑Fi block left of the power block

@@ -99,7 +99,7 @@ On lock, videolock **resets the keyboard to layout 0** (usually `us`) and shows 
 
 ### Battery / network / power
 
-Battery % + Wi‑Fi/Ethernet and **sleep / reboot / power** buttons sit in a bottom-left corner dock (`systemctl`), so the center panel stays focused on unlock.
+Battery and Wi‑Fi/Ethernet sit as separate icon chips in a **bottom-right** corner dock, with **sleep / reboot / power** buttons underneath (`systemctl`). Center panel stays focused on unlock.
 
 Colors follow HyDE **wallbash** (`~/.cache/hyde/wall.dcol`) when present. Disable with `VIDEOLOCK_WALLBASH=0`.
 

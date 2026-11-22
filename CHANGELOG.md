@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.2 — 2026-11-22
+
+- Bottom-right corner dock: battery + Wi‑Fi as separate icon chips; power buttons with symbolic icons
+
 ## 0.3.1 — 2026-11-22
 
 - Move battery/network + power buttons to a bottom-left corner dock (center panel stays lean)

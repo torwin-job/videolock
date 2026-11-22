@@ -16,7 +16,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 os.environ.setdefault("GTK_IM_MODULE", "none")
 os.environ.setdefault("GST_PLUGIN_FEATURE_RANK", "vah264dec:MAX,vaapih264dec:MAX")
@@ -515,7 +515,8 @@ def _battery_info() -> tuple[int | None, str]:
     return None, ""
 
 
-def _network_info() -> str:
+def _network_info() -> tuple[str, str]:
+    """Return (kind, label) where kind is wifi | eth | off."""
     try:
         r = subprocess.run(
             ["nmcli", "-t", "-f", "TYPE,STATE,CONNECTION", "device"],
@@ -525,7 +526,7 @@ def _network_info() -> str:
             check=False,
         )
         if r.returncode != 0:
-            return _("net_off")
+            return "off", _("net_off")
         wifi = eth = None
         for line in (r.stdout or "").splitlines():
             parts = line.split(":")
@@ -538,24 +539,49 @@ def _network_info() -> str:
             elif typ == "ethernet" and state.startswith("connected"):
                 eth = conn or _("eth")
         if wifi:
-            return wifi[:18]
+            return "wifi", wifi[:16]
         if eth:
-            return eth[:18]
+            return "eth", eth[:16]
     except Exception:
         pass
-    return _("net_off")
+    return "off", _("net_off")
 
 
-def _sys_status_text() -> str:
-    parts: list[str] = []
-    cap, st = _battery_info()
-    if cap is not None:
-        label = _("battery", n=cap)
-        if st.lower() in ("charging", "full", "not charging"):
-            label = f"{label} · {_('charging')}"
-        parts.append(label)
-    parts.append(_network_info())
-    return " · ".join(parts)
+def _battery_icon_name(cap: int | None, status: str) -> str:
+    if cap is None:
+        return "battery-missing-symbolic"
+    charging = status.lower() in ("charging",)
+    step = max(0, min(10, round(cap / 10))) * 10
+    if charging:
+        return f"battery-level-{step}-charging-symbolic"
+    return f"battery-level-{step}-symbolic"
+
+
+def _network_icon_name(kind: str) -> str:
+    if kind == "wifi":
+        return "network-wireless-signal-excellent-symbolic"
+    if kind == "eth":
+        return "network-wired-symbolic"
+    return "network-wireless-offline-symbolic"
+
+
+def _make_icon_chip(icon_name: str, text: str, css: str = "info-chip") -> tuple[Gtk.Button, Gtk.Image, Gtk.Label]:
+    """Pill button with symbolic icon + label (status chip or power action)."""
+    btn = Gtk.Button()
+    btn.add_css_class(css)
+    btn.set_focusable(False)
+    btn.set_can_focus(False)
+    row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+    icon = Gtk.Image.new_from_icon_name(icon_name)
+    if hasattr(icon, "set_icon_size"):
+        icon.set_icon_size(Gtk.IconSize.NORMAL)
+    icon.set_pixel_size(16)
+    lab = Gtk.Label(label=text)
+    lab.set_xalign(0.0)
+    row.append(icon)
+    row.append(lab)
+    btn.set_child(row)
+    return btn, icon, lab
 
 
 def _power_action(action: str) -> None:
@@ -613,30 +639,40 @@ label, button, entry, textview {{
 .status-warn {{ color: {t['warn']}; }}
 .status-caps {{ color: {t['caps']}; }}
 .corner-dock {{
-  margin: 0 0 {_px(22, s)} {_px(22, s)};
+  margin: 0 {_px(22, s)} {_px(22, s)} 0;
   padding: {_px(10, s)} {_px(12, s)};
   border-radius: {_px(14, s)};
   background: {t['panel']};
   border: 1px solid {t['border']};
 }}
-.sys {{
-  color: {t['status']}; font-size: {_px(12, s)};
-  font-family: {font};
-}}
-.sys-low {{ color: {t['error']}; }}
+.info-row {{ }}
 .power-row {{ margin-top: {_px(8, s)}; }}
+button.info-chip, .info-chip,
 button.power-btn, .power-btn {{
   background: {t['btn_bg']};
   color: {t['btn_fg']};
   border: 1px solid {t['border']};
-  border-radius: {_px(10, s)};
+  border-radius: {_px(12, s)};
   padding: {_px(6, s)} {_px(10, s)};
   font-size: {_px(11, s)};
   font-family: {font};
-  min-width: {_px(72, s)};
+  min-width: {_px(0, s)};
 }}
-button.power-btn:hover, .power-btn:hover {{ border-color: {t['accent']}; color: {t['accent']}; }}
-button.power-btn:active, .power-btn:active {{ background: {t['dots_bg']}; }}
+button.info-chip, .info-chip {{ color: {t['status']}; }}
+button.info-chip.sys-low, .info-chip.sys-low {{
+  color: {t['error']};
+  border-color: {t['error']};
+}}
+button.info-chip:hover, .info-chip:hover,
+button.power-btn:hover, .power-btn:hover {{
+  border-color: {t['accent']}; color: {t['accent']};
+}}
+button.power-btn:active, .power-btn:active,
+button.info-chip:active, .info-chip:active {{ background: {t['dots_bg']}; }}
+button.info-chip image, button.power-btn image {{
+  color: inherit;
+  -gtk-icon-filter: none;
+}}
 """.encode()
 
 
@@ -661,7 +697,10 @@ class VideoLock:
         self._using_frames = False
         self._shutting_down = False
         self._status_labels: list[Gtk.Label] = []
-        self._sys_labels: list[Gtk.Label] = []
+        # (bat_btn, bat_icon, bat_lab, net_btn, net_icon, net_lab) per monitor
+        self._sys_chips: list[
+            tuple[Gtk.Button, Gtk.Image, Gtk.Label, Gtk.Button, Gtk.Image, Gtk.Label]
+        ] = []
         self._layout_code = "?"
         self._caps = False
 
@@ -811,15 +850,30 @@ class VideoLock:
         return True
 
     def _refresh_sys_labels(self) -> None:
-        text = _sys_status_text()
-        cap, _st = _battery_info()
+        cap, st = _battery_info()
+        kind, net_label = _network_info()
+        if cap is None:
+            bat_text = "—"
+        else:
+            bat_text = f"{cap}%"
+            if st.lower() in ("charging", "full"):
+                bat_text = f"{bat_text} · {_('charging')}"
+        bat_icon = _battery_icon_name(cap, st)
+        net_icon = _network_icon_name(kind)
         low = cap is not None and cap <= 20
-        for lab in self._sys_labels:
-            lab.set_label(text)
+        for bat_btn, bat_img, bat_lab, net_btn, net_img, net_lab in self._sys_chips:
+            bat_lab.set_label(bat_text)
+            net_lab.set_label(net_label)
+            bat_img.set_from_icon_name(bat_icon)
+            net_img.set_from_icon_name(net_icon)
             if low:
-                lab.add_css_class("sys-low")
+                bat_btn.add_css_class("sys-low")
             else:
-                lab.remove_css_class("sys-low")
+                bat_btn.remove_css_class("sys-low")
+            if kind == "off":
+                net_btn.add_css_class("sys-low")
+            else:
+                net_btn.remove_css_class("sys-low")
 
     def _tick_sys(self):
         if self._shutting_down:
@@ -1132,32 +1186,43 @@ class VideoLock:
                 panel.append(w)
             overlay.add_overlay(panel)
 
-            # Battery / net + power actions live in the corner so the center stays clean.
+            # Status chips + power actions: bottom-right dock, separate from unlock panel.
             corner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
             corner.add_css_class("corner-dock")
-            corner.set_halign(Gtk.Align.START)
+            corner.set_halign(Gtk.Align.END)
             corner.set_valign(Gtk.Align.END)
-            sysinfo = Gtk.Label(label=_sys_status_text())
-            sysinfo.add_css_class("sys")
-            sysinfo.set_halign(Gtk.Align.START)
-            sysinfo.set_xalign(0.0)
+
+            info = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            info.add_css_class("info-row")
+            info.set_halign(Gtk.Align.END)
+            cap0, st0 = _battery_info()
+            kind0, net0 = _network_info()
+            bat_text0 = f"{cap0}%" if cap0 is not None else "—"
+            bat_btn, bat_img, bat_lab = _make_icon_chip(
+                _battery_icon_name(cap0, st0), bat_text0, "info-chip"
+            )
+            net_btn, net_img, net_lab = _make_icon_chip(
+                _network_icon_name(kind0), net0, "info-chip"
+            )
+            info.append(bat_btn)
+            info.append(net_btn)
+
             power = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
             power.add_css_class("power-row")
-            power.set_halign(Gtk.Align.START)
-            for action, label_key in (
-                ("sleep", "sleep"),
-                ("reboot", "reboot"),
-                ("shutdown", "shutdown"),
+            power.set_halign(Gtk.Align.END)
+            for action, label_key, icon_name in (
+                ("sleep", "sleep", "system-suspend-symbolic"),
+                ("reboot", "reboot", "system-reboot-symbolic"),
+                ("shutdown", "shutdown", "system-shutdown-symbolic"),
             ):
-                btn = Gtk.Button(label=_(label_key))
-                btn.add_css_class("power-btn")
-                btn.set_focusable(False)
+                btn, _ic, _lb = _make_icon_chip(icon_name, _(label_key), "power-btn")
                 btn.connect(
                     "clicked",
                     lambda _b, act=action: _power_action(act),
                 )
                 power.append(btn)
-            corner.append(sysinfo)
+
+            corner.append(info)
             corner.append(power)
             overlay.add_overlay(corner)
 
@@ -1165,7 +1230,7 @@ class VideoLock:
             self._dot_labels.append(dots)
             self._err_labels.append(err)
             self._status_labels.append(status)
-            self._sys_labels.append(sysinfo)
+            self._sys_chips.append((bat_btn, bat_img, bat_lab, net_btn, net_img, net_lab))
             self._windows.append(win)
             self._refresh_status_labels()
             self._refresh_sys_labels()

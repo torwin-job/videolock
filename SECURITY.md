@@ -31,3 +31,4 @@ Please open a private security advisory / email the maintainer. Do not file publ
 2. Prefer JPEG frames under session-lock (default) over experimental `VIDEOLOCK_GST=1`.
 3. One Super+L path only (direct bind **or** `loginctl lock-session` → hypridle, not both firing duplicate UI).
 4. Do not run the locker as root.
+5. Multi-layout: keep layout toggle as `bindl` / `locked=true`; videolock resets to layout 0 on lock by default.

@@ -77,6 +77,9 @@ $UNLOCK_CMD = $HOME/.local/bin/videolock-unlock.sh
 | `VIDEOLOCK_GST=1` | Try live video under lock |
 | `VIDEOLOCK_LANG=en\|ru` | UI language (default: locale) |
 | `VIDEOLOCK_FONT=…` | CSS font family override |
+| `VIDEOLOCK_RESET_LAYOUT=0` | disable auto-reset to primary layout on lock |
+
+On lock, videolock **resets the keyboard to layout 0** (usually `us`) and shows `US`/`RU` + `CAPS` on the panel. Use `bindl` (or Lua `locked = true`) for layout hotkeys — see `examples/`.
 
 Prepare manually:
 

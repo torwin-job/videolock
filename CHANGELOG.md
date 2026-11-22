@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1 — 2026-11-22
+
+### Critical UX (keyboard)
+
+- Reset to primary XKB layout (`hyprctl switchxkblayout all 0`) when arming the lock
+- On-screen layout indicator (`US`/`RU`/…) + Caps Lock warning
+- Examples use `bindl` / `locked = true` for layout toggle on the lock screen
+- `VIDEOLOCK_RESET_LAYOUT=0` to opt out of auto-reset
+
 ## 0.2.0 — 2026-11-22
 
 ### Public packaging

@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import json
 import locale
 import os
 import pwd
 import signal
+import subprocess
 import sys
 import time
 import traceback
 from datetime import datetime
 from pathlib import Path
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 os.environ.setdefault("GTK_IM_MODULE", "none")
 os.environ.setdefault("GST_PLUGIN_FEATURE_RANK", "vah264dec:MAX,vaapih264dec:MAX")
@@ -102,12 +104,14 @@ _STRINGS = {
         "bad_password": "wrong password",
         "wait": "wait {n} s",
         "pam_missing": "python-pam missing — lock cancelled",
+        "caps": "CAPS",
     },
     "ru": {
         "hint": "ввод пароля · Enter — войти",
         "bad_password": "неверный пароль",
         "wait": "подождите {n} с",
         "pam_missing": "Нет модуля pam — блокировка отменена",
+        "caps": "CAPS",
     },
 }
 
@@ -165,6 +169,83 @@ def _wipe_bytearray(buf: bytearray) -> None:
     buf.clear()
 
 
+def _hyprctl(args: list[str], timeout: float = 1.5) -> str:
+    try:
+        r = subprocess.run(
+            ["hyprctl", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        if r.returncode != 0:
+            return ""
+        return (r.stdout or "").strip()
+    except Exception:
+        return ""
+
+
+def _reset_keyboard_layout() -> None:
+    """Force primary layout (usually us) so password entry is not stuck on RU."""
+    if os.environ.get("VIDEOLOCK_RESET_LAYOUT", "1") != "1":
+        return
+    out = _hyprctl(["switchxkblayout", "all", "0"])
+    log(f"reset layout → primary (all 0) {out!r}")
+
+
+def _active_keymap_raw() -> str:
+    raw = _hyprctl(["devices", "-j"])
+    if not raw:
+        return ""
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return ""
+    keyboards = data.get("keyboards") or []
+    main = next((k for k in keyboards if k.get("main")), None)
+    kb = main or (keyboards[0] if keyboards else None)
+    if not kb:
+        return ""
+    return str(kb.get("active_keymap") or kb.get("layout") or "")
+
+
+def _short_layout(keymap: str) -> str:
+    n = (keymap or "").lower()
+    if not n:
+        return "?"
+    if "russian" in n or n.startswith("ru") or ",ru" in n or n == "ru":
+        return "RU"
+    if "english" in n or "us" in n or n.startswith("en"):
+        return "US"
+    if "german" in n or n.startswith("de"):
+        return "DE"
+    if "french" in n or n.startswith("fr"):
+        return "FR"
+    if "ukrain" in n or n.startswith("ua") or n.startswith("uk"):
+        return "UA"
+    # fallback: first token / layout code
+    token = keymap.split(",")[0].strip()
+    if "(" in token:
+        token = token.split("(")[0].strip()
+    return (token[:3] or "?").upper()
+
+
+def _caps_lock_on(fallback: bool = False) -> bool:
+    try:
+        display = Gdk.Display.get_default()
+        if display is None:
+            return fallback
+        seat = display.get_default_seat()
+        if seat is None:
+            return fallback
+        kb = seat.get_keyboard()
+        if kb is not None and hasattr(kb, "get_caps_lock_state"):
+            return bool(kb.get_caps_lock_state())
+    except Exception:
+        pass
+    return fallback
+
+
 def _font_stack() -> str:
     custom = os.environ.get("VIDEOLOCK_FONT", "").strip()
     if custom:
@@ -195,6 +276,12 @@ window {{ background: #0b1020; }}
 }}
 .error {{ color: #f38ba8; font-size: 13px; min-height: 18px; margin-top: 8px; }}
 .hint {{ color: #7f8aad; font-size: 12px; margin-top: 10px; font-family: {font}; }}
+.status {{
+  color: #a6adc8; font-size: 13px; margin-top: 12px; letter-spacing: 2px;
+  font-family: {font};
+}}
+.status-warn {{ color: #f9e2af; }}
+.status-caps {{ color: #fab387; }}
 """.encode()
 
 
@@ -218,6 +305,9 @@ class VideoLock:
         self._frame_i = 0
         self._using_frames = False
         self._shutting_down = False
+        self._status_labels: list[Gtk.Label] = []
+        self._layout_code = "?"
+        self._caps = False
 
         self.lock = SessionLock.Instance.new()
         self.lock.connect("locked", lambda *_: log("locked"))
@@ -288,15 +378,21 @@ class VideoLock:
             self._shutdown()
             return
         self.app.hold()
+        # Critical: unlock passwords are almost always ASCII — reset to primary layout
+        _reset_keyboard_layout()
+        self._layout_code = _short_layout(_active_keymap_raw())
+        self._caps = _caps_lock_on(False)
+        self._refresh_status_labels()
         log(
             f"lock() video={VIDEO} frames={FRAME_DIR} poster={POSTER} "
-            f"gst={os.environ.get('VIDEOLOCK_GST', '0')}"
+            f"gst={os.environ.get('VIDEOLOCK_GST', '0')} layout={self._layout_code}"
         )
         ok = self.lock.lock()
         log(f"lock -> {ok!r} locked={self.lock.is_locked()}")
         if not ok and not self.lock.is_locked():
             GLib.timeout_add(200, self._retry_lock, 1)
         GLib.timeout_add_seconds(1, self._tick_clock)
+        GLib.timeout_add(400, self._tick_status)
 
     def _retry_lock(self, attempt: int):
         if self.lock.is_locked():
@@ -316,6 +412,44 @@ class VideoLock:
         for c, dt in self._clock_pairs:
             c.set_label(t)
             dt.set_label(d)
+        return True
+
+    def _status_text(self) -> str:
+        parts = [self._layout_code or "?"]
+        if self._caps:
+            parts.append(_("caps"))
+        return " · ".join(parts)
+
+    def _refresh_status_labels(self) -> None:
+        text = self._status_text()
+        for lab in self._status_labels:
+            lab.set_label(text)
+            if self._caps:
+                lab.add_css_class("status-caps")
+                lab.remove_css_class("status-warn")
+            elif (self._layout_code or "").upper() not in ("US", "EN", "?"):
+                lab.add_css_class("status-warn")
+                lab.remove_css_class("status-caps")
+            else:
+                lab.remove_css_class("status-warn")
+                lab.remove_css_class("status-caps")
+
+    def _poll_status(self) -> None:
+        raw = _active_keymap_raw()
+        if raw:
+            self._layout_code = _short_layout(raw)
+        self._caps = _caps_lock_on(self._caps)
+        self._refresh_status_labels()
+
+    def _poll_status_once(self):
+        if not self._shutting_down:
+            self._poll_status()
+        return False
+
+    def _tick_status(self):
+        if self._shutting_down:
+            return False
+        self._poll_status()
         return True
 
     def _update_dots(self):
@@ -373,11 +507,21 @@ class VideoLock:
         return False
 
     def _on_key(self, _ctrl, keyval: int, _keycode: int, state: Gdk.ModifierType) -> bool:
+        # Track caps from modifiers; Caps_Lock toggles after this event → idle refresh
+        self._caps = bool(state & Gdk.ModifierType.LOCK_MASK) or _caps_lock_on(
+            bool(state & Gdk.ModifierType.LOCK_MASK)
+        )
+        if keyval == Gdk.KEY_Caps_Lock:
+            GLib.timeout_add(50, self._poll_status_once)
+            return True
         if keyval in (
             Gdk.KEY_Shift_L, Gdk.KEY_Shift_R, Gdk.KEY_Control_L, Gdk.KEY_Control_R,
             Gdk.KEY_Alt_L, Gdk.KEY_Alt_R, Gdk.KEY_Meta_L, Gdk.KEY_Meta_R,
-            Gdk.KEY_Super_L, Gdk.KEY_Super_R, Gdk.KEY_Caps_Lock, Gdk.KEY_Num_Lock,
+            Gdk.KEY_Super_L, Gdk.KEY_Super_R, Gdk.KEY_Num_Lock,
         ):
+            # Alt/Shift may switch XKB group — refresh layout shortly
+            if keyval in (Gdk.KEY_Alt_L, Gdk.KEY_Alt_R, Gdk.KEY_Shift_L, Gdk.KEY_Shift_R):
+                GLib.timeout_add(80, self._poll_status_once)
             return True
         if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter):
             self._try_unlock()
@@ -385,6 +529,7 @@ class VideoLock:
         if keyval == Gdk.KEY_Escape:
             return True
         if time.monotonic() < self._unlock_blocked_until:
+            self._refresh_status_labels()
             return True
         if keyval == Gdk.KEY_BackSpace:
             if self._pw:
@@ -401,7 +546,10 @@ class VideoLock:
                 self._pw.extend(chr(ch).encode("utf-8"))
             self._update_dots()
             self._set_errors("")
+            # Typing often follows layout toggle — keep indicator fresh
+            GLib.timeout_add(50, self._poll_status_once)
             return True
+        self._refresh_status_labels()
         return True
 
     def _start_gst_video(self, stack: Gtk.Stack, video_page: Gtk.Widget):
@@ -602,15 +750,19 @@ class VideoLock:
             err.add_css_class("error")
             hint = Gtk.Label(label=_("hint"))
             hint.add_css_class("hint")
+            status = Gtk.Label(label=self._status_text())
+            status.add_css_class("status")
 
-            for w in (clock, date, user, dots, err, hint):
+            for w in (clock, date, user, dots, err, hint, status):
                 panel.append(w)
             overlay.add_overlay(panel)
 
             self._clock_pairs.append((clock, date))
             self._dot_labels.append(dots)
             self._err_labels.append(err)
+            self._status_labels.append(status)
             self._windows.append(win)
+            self._refresh_status_labels()
 
             key = Gtk.EventControllerKey()
             key.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)

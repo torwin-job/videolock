@@ -69,5 +69,10 @@ Not a drop-in replacement for `hyprlock` ecosystem maturity, but structurally in
 - [x] `install.sh` works without HyDE
 - [x] Core has zero hard dependency on SDDM Astronaut / Catppuccin paths
 - [x] `videolock --check` documents missing deps
-- [ ] Maintainer: push to public remote + tag `v0.2.0`
-- [ ] Optional: AUR PKGBUILD in `contrib/packaging/`
+- [x] Maintainer: push to public remote (`torwin-job/videolock`)
+- [ ] Optional: tag `v0.2.1` + AUR PKGBUILD in `contrib/packaging/`
+
+### Audit note — keyboard layout (fixed in 0.2.1)
+
+Under session-lock, plain Hyprland `bind` for `switchxkblayout` is inactive; need `bindl`.
+Auto-reset to primary layout + on-screen indicator closes the “stuck on RU” unlock failure mode.

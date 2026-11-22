@@ -16,7 +16,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 os.environ.setdefault("GTK_IM_MODULE", "none")
 os.environ.setdefault("GST_PLUGIN_FEATURE_RANK", "vah264dec:MAX,vaapih264dec:MAX")
@@ -612,21 +612,28 @@ label, button, entry, textview {{
 }}
 .status-warn {{ color: {t['warn']}; }}
 .status-caps {{ color: {t['caps']}; }}
+.corner-dock {{
+  margin: 0 0 {_px(22, s)} {_px(22, s)};
+  padding: {_px(10, s)} {_px(12, s)};
+  border-radius: {_px(14, s)};
+  background: {t['panel']};
+  border: 1px solid {t['border']};
+}}
 .sys {{
-  color: {t['status']}; font-size: {_px(12, s)}; margin-top: {_px(10, s)};
+  color: {t['status']}; font-size: {_px(12, s)};
   font-family: {font};
 }}
 .sys-low {{ color: {t['error']}; }}
-.power-row {{ margin-top: {_px(14, s)}; }}
+.power-row {{ margin-top: {_px(8, s)}; }}
 button.power-btn, .power-btn {{
   background: {t['btn_bg']};
   color: {t['btn_fg']};
   border: 1px solid {t['border']};
   border-radius: {_px(10, s)};
-  padding: {_px(8, s)} {_px(12, s)};
+  padding: {_px(6, s)} {_px(10, s)};
   font-size: {_px(11, s)};
   font-family: {font};
-  min-width: {_px(88, s)};
+  min-width: {_px(72, s)};
 }}
 button.power-btn:hover, .power-btn:hover {{ border-color: {t['accent']}; color: {t['accent']}; }}
 button.power-btn:active, .power-btn:active {{ background: {t['dots_bg']}; }}
@@ -1120,12 +1127,23 @@ class VideoLock:
             hint.add_css_class("hint")
             status = Gtk.Label(label=self._status_text())
             status.add_css_class("status")
+
+            for w in (clock, date, user, dots, err, hint, status):
+                panel.append(w)
+            overlay.add_overlay(panel)
+
+            # Battery / net + power actions live in the corner so the center stays clean.
+            corner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            corner.add_css_class("corner-dock")
+            corner.set_halign(Gtk.Align.START)
+            corner.set_valign(Gtk.Align.END)
             sysinfo = Gtk.Label(label=_sys_status_text())
             sysinfo.add_css_class("sys")
-
-            power = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            sysinfo.set_halign(Gtk.Align.START)
+            sysinfo.set_xalign(0.0)
+            power = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
             power.add_css_class("power-row")
-            power.set_halign(Gtk.Align.CENTER)
+            power.set_halign(Gtk.Align.START)
             for action, label_key in (
                 ("sleep", "sleep"),
                 ("reboot", "reboot"),
@@ -1139,10 +1157,9 @@ class VideoLock:
                     lambda _b, act=action: _power_action(act),
                 )
                 power.append(btn)
-
-            for w in (clock, date, user, dots, err, hint, status, sysinfo, power):
-                panel.append(w)
-            overlay.add_overlay(panel)
+            corner.append(sysinfo)
+            corner.append(power)
+            overlay.add_overlay(corner)
 
             self._clock_pairs.append((clock, date))
             self._dot_labels.append(dots)

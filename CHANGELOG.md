@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1 — 2026-11-22
+
+- Move battery/network + power buttons to a bottom-left corner dock (center panel stays lean)
+
 ## 0.3.0 — 2026-11-22
 
 - Battery + network line on the lock panel

@@ -137,8 +137,9 @@ videolock-prepare-assets --video ~/wall.mp4
 ## Project layout
 
 ```
-bin/           # videolock, wrappers
-scripts/       # prepare-assets, warm-video
+videolock/     # Python package (cli, locker, theme, systeminfo, …)
+bin/           # thin launcher + shell wrappers
+scripts/       # prepare-assets, warm-video, smoke-test
 examples/      # hypridle / hyprland snippets
 contrib/hyde/  # optional wallpaper & personal HyDE glue
 docs/          # architecture + audits

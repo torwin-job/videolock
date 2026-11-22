@@ -19,10 +19,17 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-for f in videolock videolock.sh videolock-unlock.sh videolock-prepare-assets videolock-warm-video; do
+for f in videolock videolock.sh videolock-unlock.sh videolock-prepare-assets videolock-warm-video videolock-smoke-test; do
   rm -f "$BIN_DIR/$f"
   echo "removed $BIN_DIR/$f"
 done
+
+# Always remove installed Python package (assets stay unless --purge-data)
+if [ -d "$DATA_DIR/python/videolock" ]; then
+  rm -rf "$DATA_DIR/python/videolock"
+  echo "removed $DATA_DIR/python/videolock"
+  rmdir "$DATA_DIR/python" 2>/dev/null || true
+fi
 
 if [ "$PURGE" -eq 1 ]; then
   rm -rf "$DATA_DIR" "$CACHE_DIR"

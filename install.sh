@@ -25,12 +25,13 @@ Options:
   -h, --help         show this help
 
 Installs:
-  \$PREFIX/bin/videolock
+  \$PREFIX/bin/videolock              (launcher)
   \$PREFIX/bin/videolock.sh
   \$PREFIX/bin/videolock-unlock.sh
   \$PREFIX/bin/videolock-prepare-assets
   \$PREFIX/bin/videolock-warm-video
   \$PREFIX/bin/videolock-smoke-test
+  \$XDG_DATA_HOME/videolock/python/videolock/   (Python package)
 EOF
 }
 
@@ -90,6 +91,16 @@ install -m 0755 "$ROOT/scripts/smoke-test.sh" "$BIN_DIR/videolock-smoke-test"
 
 mkdir -p "$DATA_DIR"
 chmod 700 "$DATA_DIR" 2>/dev/null || true
+
+# Python package (modular core) → XDG data so ~/.local/bin/videolock can import it
+PY_DIR="$DATA_DIR/python"
+echo "==> install Python package → $PY_DIR/videolock"
+rm -rf "$PY_DIR/videolock"
+mkdir -p "$PY_DIR"
+cp -a "$ROOT/videolock" "$PY_DIR/videolock"
+# drop caches if any
+find "$PY_DIR/videolock" -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
+find "$PY_DIR/videolock" -type f -name '*.pyc' -delete 2>/dev/null || true
 
 if [ "$PREPARE" -eq 1 ]; then
   if [ -z "$VIDEO" ]; then

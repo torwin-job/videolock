@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0 — 2026-11-22
+
+- Split monolith into `videolock/` package (`cli`, `locker`, `theme`, `systeminfo`, …)
+- `bin/videolock` is a thin launcher; `install.sh` copies package to XDG `…/videolock/python/`
+
 ## 0.3.4 — 2026-11-22
 
 - Cyrillic-safe UI font: Pixelon stays on clock/dots; labels & buttons use JetBrains/Maple/DejaVu (`VIDEOLOCK_UI_FONT`)
